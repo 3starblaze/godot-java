@@ -35,9 +35,14 @@
 
 (defn method-m->lines [m]
   (concat
-   [(format "public %s %s (%s) {"
-            (or (get-in m ["return_value" "type"]) "void")
-            (get m "name")
+   [(format "%s(%s) {"
+            (->> ["public"
+                  (if (get m "is_static") "static" nil)
+                  (if (get m "is_virtual") nil "final")
+                  (or (get-in m ["return_value" "type"]) "void")
+                  (get m "name")]
+                 (filter (complement nil?))
+                 (str/join " "))
             (args-info->s (map (fn [arg] {:name (get arg "name")
                                           :type (resolve-arg-type (get arg "type"))})
                                (get m "arguments"))))]
