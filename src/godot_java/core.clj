@@ -10,19 +10,50 @@
 
 (def godot-class-prefix "GD")
 
+(defn indent-line [s]
+  (str "    " s))
+
 (defn package-string [package-name]
   (format "package %s;" package-name))
+
+(defn resolve-arg-type [?s]
+  (if (nil? ?s)
+    "void"
+    ;; TODO: Check if this is correct behavior
+    (->> (str/split ?s #"::" 2)
+       last
+       (str godot-class-prefix))))
 
 (defn class-lines [classname parent-classname body-lines]
   (concat
    [(format "public class %s extends %s {" classname parent-classname)]
-   body-lines
+   (map indent-line body-lines)
    ["}"]))
 
+(defn args-info->s [args-info]
+  (str/join ", " (map #(format "%s %s" (:type %) (:name %)) args-info)))
+
+(defn method-m->lines [m]
+  (concat
+   [(format "public %s %s (%s) {"
+            (or (get-in m ["return_value" "type"]) "void")
+            (get m "name")
+            (args-info->s (map (fn [arg] {:name (get arg "name")
+                                          :type (resolve-arg-type (get arg "type"))})
+                               (get m "arguments"))))]
+   ["}"]))
+
+(defn normal-class-m->lines [m]
+  (concat
+   [(package-string base-package-name)
+    ""]
+   (class-lines (str godot-class-prefix (get m "name"))
+                (or (str godot-class-prefix (get m "inherits")) "Object")
+                (flatten (map method-m->lines (get m "methods"))))))
+
 (comment
-  (->> (concat
-        [(package-string base-package-name)
-         ""]
-        (class-lines "Child" "Parent" []))
+  (->> (get api "classes")
+       second
+       normal-class-m->lines
        (str/join "\n")
        println))
