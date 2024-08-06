@@ -63,7 +63,9 @@
    [(package-string base-package-name)
     ""]
    (class-lines (str godot-class-prefix (get m "name"))
-                (or (str godot-class-prefix (get m "inherits")) "Object")
+                (if-let [inherits (get m "inherits")]
+                  (resolve-arg-type inherits)
+                  "Object")
                 (-> (concat (map enum-m->lines (get m "enums"))
                             (map method-m->lines (get m "methods")))
                     flatten))))
