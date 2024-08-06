@@ -58,6 +58,9 @@
           (map indent-line)))
    ["}"]))
 
+(defn normal-constant-m->line [m]
+  (format "public final static long %s = %s;" (get m "name") (get m "value")))
+
 (defn normal-class-m->lines [m]
   (concat
    [(package-string base-package-name)
@@ -66,8 +69,10 @@
                 (if-let [inherits (get m "inherits")]
                   (resolve-arg-type inherits)
                   "Object")
-                (-> (concat (map enum-m->lines (get m "enums"))
-                            (map method-m->lines (get m "methods")))
+                (-> (concat
+                     (map normal-constant-m->line (get m "constants"))
+                     (map enum-m->lines (get m "enums"))
+                     (map method-m->lines (get m "methods")))
                     flatten))))
 
 (comment
