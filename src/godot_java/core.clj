@@ -48,17 +48,31 @@
                                (get m "arguments"))))]
    ["}"]))
 
+(defn enum-m->lines [m]
+  (concat
+   [(format "public enum %s {" (get m "name"))]
+   ;; TODO Handle bitfields
+   (let [n (count (get m "values"))]
+     (->> (map #(format "%s = %s" (get % "name") (get % "value")) (get m "values"))
+          (map-indexed (fn [i s] (str s (if (= i (dec n)) ";" ","))))
+          (map indent-line)))
+   ["}"]))
+
 (defn normal-class-m->lines [m]
   (concat
    [(package-string base-package-name)
     ""]
    (class-lines (str godot-class-prefix (get m "name"))
                 (or (str godot-class-prefix (get m "inherits")) "Object")
-                (flatten (map method-m->lines (get m "methods"))))))
+                (-> (concat (map enum-m->lines (get m "enums"))
+                            (map method-m->lines (get m "methods")))
+                    flatten))))
 
 (comment
   (->> (get api "classes")
-       second
+       (filter #(= (get % "name") "Object"))
+       first
        normal-class-m->lines
+       flatten
        (str/join "\n")
        println))
