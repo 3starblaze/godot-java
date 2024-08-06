@@ -39,7 +39,7 @@
             (->> ["public"
                   (if (get m "is_static") "static" nil)
                   (if (get m "is_virtual") nil "final")
-                  (or (get-in m ["return_value" "type"]) "void")
+                  (resolve-arg-type (get-in m ["return_value" "type"]))
                   (get m "name")]
                  (filter (complement nil?))
                  (str/join " "))
