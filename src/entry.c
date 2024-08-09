@@ -5,10 +5,7 @@
 #include "../godot-headers/gdextension_interface.h"
 
 #define HALT_ON_ERR(env) if (!assert_no_errors(env)) return false;
-
-void noop(void *userdata, GDExtensionInitializationLevel p_level) {
-  return;
-}
+#define ARRAY_COUNT(var) (sizeof(var) / sizeof(*var))
 
 /**
  * If error has occurred, report it and return false, otherwise return true.
@@ -70,6 +67,31 @@ void godot_deinitialize(void *userdata, GDExtensionInitializationLevel p_level) 
                               p_level);
 }
 
+typedef struct {
+  const char *name;
+  const char *signature;
+} method_signature;
+
+
+typedef enum {
+  METHOD_INITIALIZE,
+  METHOD_DEINITIALIZE,
+  METHOD_ENTRY_FUNCTION,
+  METHOD_GET_MIN_INIT_LEVEL,
+} entry_class_method;
+
+method_signature entry_class_signatures[] = {
+  [METHOD_INITIALIZE] =
+  { "initialize",      "(I)V" },
+  [METHOD_DEINITIALIZE] =
+  { "deinitialize",    "(I)V" },
+  [METHOD_ENTRY_FUNCTION] =
+  { "entryFunction",   "(JJ)Z" },
+  [METHOD_GET_MIN_INIT_LEVEL] =
+  { "getMinInitlevel", "()I" },
+};
+
+
 // Make sure you open godot from console in order to see these printf's
 // also you should be at Godot 4.1+ afaik
 // NOTE: This function should return true on success and false on failure.
@@ -79,71 +101,66 @@ godot_entry(
   const GDExtensionClassLibraryPtr p_library,
   GDExtensionInitialization *r_initialization
 ) {
-  JavaVM *jvm;
-  JNIEnv *env;
-  JavaVMInitArgs vm_args;
-  JavaVMOption option;
-
   LOAD_ENV_OR_HALT(classpath, "CLASSPATH")
   LOAD_ENV_OR_HALT(entry_class_name, "ENTRY_CLASS")
 
-  option.optionString = new_sprintf("%s%s", "-Djava.class.path=", classpath);
-  vm_args.options = &option;
-  vm_args.nOptions = 1;
-  vm_args.version = JNI_VERSION_10;
-  vm_args.ignoreUnrecognized = false;
+  JavaVM *jvm;
+  JNIEnv *env;
+  JavaVMOption option = {
+    .optionString = new_sprintf("-Djava.class.path=%s", classpath),
+  };
+  JavaVMInitArgs vm_args = {
+    .options = &option,
+    .nOptions = 1,
+    .version = JNI_VERSION_10,
+    .ignoreUnrecognized = false,
+  };
 
-  JNI_CreateJavaVM(&jvm, (void **)&env, &vm_args);
-  HALT_ON_ERR(env);
-
-  jclass entry_class = (*env)->FindClass(env, entry_class_name);
-  if (!entry_class) {
-    fprintf(stderr, "Could not find class %s!\n", entry_class_name);
+  jint jvm_init_result = JNI_CreateJavaVM(&jvm, (void **)&env, &vm_args);
+  free(option.optionString);
+  if (jvm_init_result != 0) {
+    fprintf(stderr, "Could not initialize JVM, error code %d!\n", jvm_init_result);
     return false;
   }
+
+  jclass entry_class = (*env)->FindClass(env, entry_class_name);
   HALT_ON_ERR(env);
 
   char *singleton_getter_signature = new_sprintf("()L%s;", entry_class_name);
-
   jmethodID singletonMethodId =
     (*env)->GetStaticMethodID(env, entry_class, "getInstance", singleton_getter_signature);
   free(singleton_getter_signature);
   HALT_ON_ERR(env);
 
+  jmethodID methods[ARRAY_COUNT(entry_class_signatures)];
+
+  for (size_t i = 0; i < ARRAY_COUNT(entry_class_signatures); i++) {
+    methods[i] = (*env)->GetMethodID(env,
+                                     entry_class,
+                                     entry_class_signatures[i].name,
+                                     entry_class_signatures[i].signature);
+    HALT_ON_ERR(env);
+  }
+
   entry_init_deinit_type *userdata = malloc(sizeof(entry_init_deinit_type));
 
   userdata->env = env;
-
-  userdata->init
-    = (*env)->GetMethodID(env, entry_class, "initialize", "(I)V");
-  HALT_ON_ERR(env);
-
-  userdata->deinit
-    = (*env)->GetMethodID(env, entry_class, "deinitialize", "(I)V");
-  HALT_ON_ERR(env);
-
-  jmethodID entry_method_id
-    = (*env)->GetMethodID(env, entry_class, "entryFunction", "(JJ)Z");
-  HALT_ON_ERR(env);
-
+  userdata->init = methods[METHOD_INITIALIZE];
+  userdata->deinit = methods[METHOD_DEINITIALIZE];
   userdata->singleton_instance
     = (*env)->CallStaticObjectMethod(env, entry_class, singletonMethodId);
-  HALT_ON_ERR(env);
-
-  jmethodID init_level_method_id
-    = (*env)->GetMethodID(env, entry_class, "getMinInitlevel", "()I");
   HALT_ON_ERR(env);
 
   r_initialization->minimum_initialization_level
     = (*env)->CallIntMethod(env,
                             userdata->singleton_instance,
-                            init_level_method_id);
+                            methods[METHOD_GET_MIN_INIT_LEVEL]);
   HALT_ON_ERR(env);
 
   jboolean is_ok
     = (*env)->CallBooleanMethod(env,
                              userdata->singleton_instance,
-                             entry_method_id,
+                             methods[METHOD_ENTRY_FUNCTION],
                              p_get_proc_address,
                              p_library);
   HALT_ON_ERR(env);
