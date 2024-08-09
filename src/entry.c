@@ -3,6 +3,8 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include "../godot-headers/gdextension_interface.h"
+#include "boilerplate.h"
+#include "helper_node_class.h"
 
 #define HALT_ON_ERR(env) if (!assert_no_errors(env)) return false;
 #define ARRAY_COUNT(var) (sizeof(var) / sizeof(*var))
@@ -47,19 +49,23 @@ typedef struct {
   jobject singleton_instance;
   jmethodID deinit;
   jmethodID init;
-} entry_init_deinit_type;
+} GlobalUserdata;
 
 void godot_initialize(void *userdata, GDExtensionInitializationLevel p_level) {
-  entry_init_deinit_type *data = userdata;
+  GlobalUserdata *data = userdata;
 
   (*(data->env))->CallVoidMethod(data->env,
                               data->singleton_instance,
                               data->init,
                               p_level);
+
+  if (p_level == GDEXTENSION_INITIALIZATION_SCENE) {
+    register_helper_node_class("Node", "TODOChangeThisClassname");
+  }
 }
 
 void godot_deinitialize(void *userdata, GDExtensionInitializationLevel p_level) {
-  entry_init_deinit_type *data = userdata;
+  GlobalUserdata *data = userdata;
 
   (*(data->env))->CallVoidMethod(data->env,
                               data->singleton_instance,
@@ -104,6 +110,8 @@ godot_entry(
   LOAD_ENV_OR_HALT(classpath, "CLASSPATH")
   LOAD_ENV_OR_HALT(entry_class_name, "ENTRY_CLASS")
 
+  init_boilerplate(p_get_proc_address, p_library);
+
   JavaVM *jvm;
   JNIEnv *env;
   JavaVMOption option = {
@@ -142,7 +150,7 @@ godot_entry(
     HALT_ON_ERR(env);
   }
 
-  entry_init_deinit_type *userdata = malloc(sizeof(entry_init_deinit_type));
+  GlobalUserdata *userdata = malloc(sizeof(GlobalUserdata));
 
   userdata->env = env;
   userdata->init = methods[METHOD_INITIALIZE];
