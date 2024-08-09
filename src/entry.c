@@ -5,9 +5,9 @@
 #include "../godot-headers/gdextension_interface.h"
 #include "boilerplate.h"
 #include "helper_node_class.h"
+#include "util.h"
 
 #define HALT_ON_ERR(env) if (!assert_no_errors(env)) return false;
-#define ARRAY_COUNT(var) (sizeof(var) / sizeof(*var))
 
 /**
  * If error has occurred, report it and return false, otherwise return true.
@@ -49,6 +49,7 @@ typedef struct {
   jobject singleton_instance;
   jmethodID deinit;
   jmethodID init;
+  HelperNodeClassData *helper_node_classdata;
 } GlobalUserdata;
 
 void godot_initialize(void *userdata, GDExtensionInitializationLevel p_level) {
@@ -60,7 +61,7 @@ void godot_initialize(void *userdata, GDExtensionInitializationLevel p_level) {
                               p_level);
 
   if (p_level == GDEXTENSION_INITIALIZATION_SCENE) {
-    register_helper_node_class("Node", "TODOChangeThisClassname");
+    data->helper_node_classdata = register_helper_node_class("Node", "TODOChangeThisClassname");
   }
 }
 
@@ -71,13 +72,11 @@ void godot_deinitialize(void *userdata, GDExtensionInitializationLevel p_level) 
                               data->singleton_instance,
                               data->deinit,
                               p_level);
+
+  if (p_level == GDEXTENSION_INITIALIZATION_SCENE) {
+    unregister_helper_node_class(data->helper_node_classdata);
+  }
 }
-
-typedef struct {
-  const char *name;
-  const char *signature;
-} method_signature;
-
 
 typedef enum {
   METHOD_INITIALIZE,

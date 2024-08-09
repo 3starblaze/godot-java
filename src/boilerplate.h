@@ -18,6 +18,7 @@ struct {
     GDExtensionInterfaceVariantGetPtrDestructor variant_get_ptr_destructor;
     GDExtensionInterfaceClassdbConstructObject classdb_construct_object;
     GDExtensionInterfaceClassdbRegisterExtensionClass2 classdb_register_extension_class2;
+    GDExtensionInterfaceClassdbUnregisterExtensionClass classdb_unregister_extension_class;
     GDExtensionInterfaceObjectSetInstance object_set_instance;
   } api;
   struct {
@@ -42,7 +43,7 @@ void *c_to_gd_string(const char *c_string) {
   return res;
 }
 
-bool string_name_eq(void *string_name_a, void *string_name_b) {
+bool string_name_eq(const void *string_name_a, const void *string_name_b) {
   GDExtensionBool res;
   gd._internal.raw_string_name_eq_op(string_name_a, string_name_b, &res);
   return res;
@@ -60,6 +61,7 @@ init_boilerplate(
   STORE_GD_EXTENSION(classdb_construct_object);
   STORE_GD_EXTENSION(classdb_register_extension_class2);
   STORE_GD_EXTENSION(object_set_instance);
+  STORE_GD_EXTENSION(classdb_unregister_extension_class);
 
   gd.misc.p_library = p_library;
 
