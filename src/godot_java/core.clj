@@ -34,7 +34,12 @@
 (def dont-use-me-class-name "GDDontUseMe")
 
 (defn sanitize-method-name [s]
-  (if (= s "new") "gd_new" s))
+  (case s
+    ;; NOTE: new is a reserved word
+    "new" "gd_new"
+    ;; NOTE: wait is a final method defined in java.lang.Object
+    "wait" "gd_wait"
+    s))
 
 (def dont-use-me-class-lines
   ["// This is a dummy class for types that could not be converted (C pointers)"
@@ -151,7 +156,9 @@
          (let [classname (resolve-arg-type (get m "name"))]
            {:filename (str classname ".java")
             ;; TODO Implement body
-            :lines (class-lines classname "Object" [])})))))
+            :lines (class-lines classname
+                                "Object"
+                                (flatten (map enum-m->lines (get m "enums"))))})))))
 
 (defn make-global-scope-class-file-export-m []
   (let [classname (str godot-class-prefix "GlobalScope")]
