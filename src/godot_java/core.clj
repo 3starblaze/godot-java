@@ -10,6 +10,8 @@
 
 (def godot-class-prefix "GD")
 
+(def java-class-build-dir (io/file "./build/godot_java/godot/"))
+
 (defn indent-line [s]
   (str "    " s))
 
@@ -74,6 +76,14 @@
                      (map enum-m->lines (get m "enums"))
                      (map method-m->lines (get m "methods")))
                     flatten))))
+
+(defn generate-and-save-java-classes []
+  (.mkdirs java-class-build-dir)
+  (doseq [[classname source] (map #(vector (get % "name")
+                                           (str/join "\n" (normal-class-m->lines %)))
+                                  (get api "classes"))]
+    (spit (io/file java-class-build-dir (str (resolve-arg-type classname) ".java"))
+          source)))
 
 (comment
   (->> (get api "classes")
