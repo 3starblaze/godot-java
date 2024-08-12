@@ -74,15 +74,18 @@
    (let [n (count (get m "values"))]
      (->> (get m "values")
           ;: Make enum member definition line
-          (map #(format "%s(%s)" (get % "name") (get % "value")))
+          (map #(format "%s(%s)"
+                        (get % "name")
+                        ;; NOTE: We add "L" to tell Java that we are using longs
+                        (str (get % "value") "L")))
           ;; Add a semicolon for the last line and comma for other lines
           (map-indexed (fn [i s] (str s (if (= i (dec n)) ";" ","))))
           (map indent-line)))
    ;; NOTE: This adds the boilerplate constructor that lets us pass values to enums
    (map indent-line
-        ["public final int value;"
+        ["public final long value;"
          ""
-         (format "private %s(int value) {" (get m "name"))
+         (format "private %s(long value) {" (get m "name"))
          (indent-line "this.value = value;")
          "}"])
    ["}"]))
