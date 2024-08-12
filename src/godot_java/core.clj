@@ -22,13 +22,23 @@
 (defn package-string [package-name]
   (format "package %s;" package-name))
 
+(def dont-use-me-class-name "GDDontUseMe")
+
+(def dont-use-me-class-lines
+  [(package-string base-package-name)
+   ""
+   "// This is a dummy class for types that could not be converted (C pointers)"
+   (format "class %s extends Object {}" dont-use-me-class-name)])
+
 (defn resolve-arg-type [?s]
-  (if (nil? ?s)
-    "void"
-    ;; TODO: Check if this is correct behavior
-    (->> (str/split ?s #"::" 2)
-       last
-       (str godot-class-prefix))))
+  (cond
+    (nil? ?s) "void"
+    ;; NOTE: It's a C pointer, not handling that
+    (str/includes? ?s "*") dont-use-me-class-name
+    ;; FIXME: You can only discard this for enums
+    :else (->> (str/split ?s #"::" 2)
+               last
+               (str godot-class-prefix))))
 
 (defn convert-parameter-name [s]
   (str godot-parameter-prefix s))
@@ -96,6 +106,8 @@
 
 (defn generate-and-save-java-classes []
   (.mkdirs java-class-build-dir)
+  (spit (io/file java-class-build-dir (str dont-use-me-class-name ".java"))
+        (str/join "\n" dont-use-me-class-lines))
   (doseq [[classname source] (map #(vector (get % "name")
                                            (str/join "\n" (normal-class-m->lines %)))
                                   (get api "classes"))]
