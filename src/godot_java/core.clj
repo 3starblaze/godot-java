@@ -141,13 +141,40 @@
             ;; TODO Implement body
             :lines (class-lines classname "Object" [])})))))
 
+;; NOTE: The are some enums that start with "Variant." and Variant is not an explicitly
+;; decalred class, so we need to account for that
+(defn variant-global-enum? [m]
+  (str/starts-with? (get m "name") "Variant."))
+
+(defn make-global-scope-class-file-export-m []
+  (let [classname (str godot-class-prefix "GlobalScope")]
+    {:filename (str classname ".java")
+     :lines (class-lines classname
+                         "Object"
+                         (flatten
+                          (->> (get api "global_enums")
+                               (filter (complement variant-global-enum?))
+                               (map enum-m->lines))))}))
+
+(defn make-variant-class-file-export-m []
+  (let [classname (str godot-class-prefix "Variant")]
+    {:filename (str classname ".java")
+     :lines (class-lines classname
+                         "Object"
+                         (flatten
+                          (->> (get api "global_enums")
+                               (filter variant-global-enum?)
+                               (map #(update % "name" (fn [s] (subs s (count "Variant.")))))
+                               (map enum-m->lines))))}))
 
 (defn generate-and-save-java-classes []
   (.mkdirs java-class-build-dir)
   (doseq [{:keys [filename lines]}
           (concat
            [{:filename (str dont-use-me-class-name ".java")
-             :lines (class-lines dont-use-me-class-name "Object" [])}]
+             :lines (class-lines dont-use-me-class-name "Object" [])}
+            (make-variant-class-file-export-m)
+            (make-global-scope-class-file-export-m)]
            (map normal-class-m->build-file-export-m (get api "classes"))
            (make-builtin-class-file-export-ms))]
     (spit (io/file java-class-build-dir filename)
