@@ -117,19 +117,29 @@
                               (map method-m->lines (get m "methods")))
                              flatten))}))
 
-(defn struct-like-class-m->build-file-export-m [m]
+#_(defn struct-like-class-m->build-file-export-m [m]
   (let [classname (resolve-arg-type (get m "name"))]
     {:filename (str classname ".java")
      ;; TODO: Implement body
      :lines (class-lines classname "Object" [])}))
 
-(defn make-struct-like-classes []
+#_(defn make-struct-like-classes []
   (let [classes (as-> api it
                   (get it "builtin_class_member_offsets")
                   (filter #(= (get % "build_configuration") "float_64") it)
                   (first it)
                   (get it "classes"))]
     (map struct-like-class-m->build-file-export-m classes)))
+
+(defn make-builtin-class-file-export-ms []
+  (->> (get api "builtin_classes")
+       (filter #(not (#{"Nil" "bool" "int" "float" "String"}
+                      (get % "name"))))
+       (map (fn [m]
+         (let [classname (resolve-arg-type (get m "name"))]
+           {:filename (str classname ".java")
+            ;; TODO Implement body
+            :lines (class-lines classname "Object" [])})))))
 
 
 (defn generate-and-save-java-classes []
@@ -139,7 +149,7 @@
            [{:filename (str dont-use-me-class-name ".java")
              :lines (class-lines dont-use-me-class-name "Object" [])}]
            (map normal-class-m->build-file-export-m (get api "classes"))
-           (make-struct-like-classes))]
+           (make-builtin-class-file-export-ms))]
     (spit (io/file java-class-build-dir filename)
           (str/join "\n" (concat
                           [(format "package %s;" base-package-name)
