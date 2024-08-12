@@ -55,9 +55,19 @@
    [(format "public enum %s {" (get m "name"))]
    ;; TODO Handle bitfields
    (let [n (count (get m "values"))]
-     (->> (map #(format "%s = %s" (get % "name") (get % "value")) (get m "values"))
+     (->> (get m "values")
+          ;: Make enum member definition line
+          (map #(format "%s(%s)" (get % "name") (get % "value")))
+          ;; Add a semicolon for the last line and comma for other lines
           (map-indexed (fn [i s] (str s (if (= i (dec n)) ";" ","))))
           (map indent-line)))
+   ;; NOTE: This adds the boilerplate constructor that lets us pass values to enums
+   (map indent-line
+        ["public final int value;"
+         ""
+         (format "private %s(int value) {" (get m "name"))
+         (indent-line "this.value = value;")
+         "}"])
    ["}"]))
 
 (defn normal-constant-m->line [m]
@@ -93,3 +103,5 @@
        flatten
        (str/join "\n")
        println))
+
+(comment (generate-and-save-java-classes))
