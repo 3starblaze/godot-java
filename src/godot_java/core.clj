@@ -10,6 +10,10 @@
 
 (def godot-class-prefix "GD")
 
+;; NOTE: Some parameters have reserved words as names (e.g. interface, char) and thus I decided
+;; that it is easier to prefix all parameters to avoid the problem.
+(def godot-parameter-prefix "gd_")
+
 (def java-class-build-dir (io/file "./build/godot_java/godot/"))
 
 (defn indent-line [s]
@@ -25,6 +29,9 @@
     (->> (str/split ?s #"::" 2)
        last
        (str godot-class-prefix))))
+
+(defn convert-parameter-name [s]
+  (str godot-parameter-prefix s))
 
 (defn class-lines [classname parent-classname body-lines]
   (concat
@@ -45,7 +52,7 @@
                   (get m "name")]
                  (filter (complement nil?))
                  (str/join " "))
-            (args-info->s (map (fn [arg] {:name (get arg "name")
+            (args-info->s (map (fn [arg] {:name (convert-parameter-name (get arg "name"))
                                           :type (resolve-arg-type (get arg "type"))})
                                (get m "arguments"))))]
    ["}"]))
