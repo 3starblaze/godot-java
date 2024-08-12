@@ -6,6 +6,17 @@
 
 (def api (json/decode-stream (io/reader "godot-headers/extension_api.json")))
 
+;; NOTE: The are some enums that start with "Variant." and Variant is not an explicitly
+;; decalred class, so we need to account for that
+(defn variant-global-enum? [m]
+  (str/starts-with? (get m "name") "Variant."))
+
+(def global-enum-set
+  (->> (get api "global_enums")
+       (filter (complement variant-global-enum?))
+       (map #(get % "name"))
+       set))
+
 (def base-package-name "godot_java.Godot")
 
 (def godot-class-prefix "GD")
@@ -30,20 +41,21 @@
    (format "class %s extends Object {}" dont-use-me-class-name)])
 
 (defn resolve-arg-type [?s]
-  (cond
-    (nil? ?s) "void"
-    ;; NOTE: It's a C pointer, not handling that
-    (str/includes? ?s "*") dont-use-me-class-name
-    (= ?s "bool") "boolean"
-    (= ?s "String") "String"
-    ;; NOTE: Godot "float" should always be double
-    (= ?s "float") "double"
-    ;; NOTE: Godot integers are 64bit which in Java would be a long
-    (= ?s "int") "long"
+  (if (nil? ?s)
+    "void"
     ;; FIXME: You can only discard this for enums
-    :else (->> (str/split ?s #"::" 2)
-               last
-               (str godot-class-prefix))))
+    (let [s (last (str/split ?s #"::" 2))]
+      (cond
+        ;; NOTE: It's a C pointer, not handling that
+        (str/includes? s "*") dont-use-me-class-name
+        (= s "bool") "boolean"
+        (= s "String") "String"
+        ;; NOTE: Godot "float" should always be double
+        (= s "float") "double"
+        ;; NOTE: Godot integers are 64bit which in Java would be a long
+        (= s "int") "long"
+        (global-enum-set s) (str "GDGlobalScope." s)
+        :else (str godot-class-prefix s)))))
 
 (defn resolve-member-type [s]
   (case s
@@ -140,11 +152,6 @@
            {:filename (str classname ".java")
             ;; TODO Implement body
             :lines (class-lines classname "Object" [])})))))
-
-;; NOTE: The are some enums that start with "Variant." and Variant is not an explicitly
-;; decalred class, so we need to account for that
-(defn variant-global-enum? [m]
-  (str/starts-with? (get m "name") "Variant."))
 
 (defn make-global-scope-class-file-export-m []
   (let [classname (str godot-class-prefix "GlobalScope")]
