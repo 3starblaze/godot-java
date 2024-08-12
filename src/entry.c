@@ -49,6 +49,7 @@ typedef struct {
   jobject singleton_instance;
   jmethodID deinit;
   jmethodID init;
+  char *helper_node_class_name;
   HelperNodeClassData *helper_node_classdata;
 } GlobalUserdata;
 
@@ -61,7 +62,9 @@ void godot_initialize(void *userdata, GDExtensionInitializationLevel p_level) {
                               p_level);
 
   if (p_level == GDEXTENSION_INITIALIZATION_SCENE) {
-    data->helper_node_classdata = register_helper_node_class("Node", "TODOChangeThisClassname");
+    data->helper_node_classdata = register_helper_node_class(data->env,
+                                                             "Node",
+                                                             data->helper_node_class_name);
   }
 }
 
@@ -108,6 +111,7 @@ godot_entry(
 ) {
   LOAD_ENV_OR_HALT(classpath, "CLASSPATH")
   LOAD_ENV_OR_HALT(entry_class_name, "ENTRY_CLASS")
+  LOAD_ENV_OR_HALT(helper_node_class_name, "HELPER_NODE_CLASS")
 
   init_boilerplate(p_get_proc_address, p_library);
 
@@ -157,6 +161,7 @@ godot_entry(
   userdata->singleton_instance
     = (*env)->CallStaticObjectMethod(env, entry_class, singletonMethodId);
   HALT_ON_ERR(env);
+  userdata->helper_node_class_name = copy_string(helper_node_class_name);
 
   r_initialization->minimum_initialization_level
     = (*env)->CallIntMethod(env,

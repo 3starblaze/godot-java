@@ -6,6 +6,7 @@
 #include "boilerplate.h"
 #include "util.h"
 #include <stdio.h>
+#include <jni.h>
 
 typedef enum {
   METHOD_ENTER_TREE,
@@ -19,6 +20,8 @@ typedef enum {
   METHOD_UNHANDLED_KEY_INPUT,
   METHOD_READY,
 } NodeVirtualMethodType;
+
+const char *helper_node_constructor_signature = "(J)V";
 
 method_signature node_virtual_signatures[] = {
   [METHOD_ENTER_TREE] =
@@ -44,16 +47,24 @@ method_signature node_virtual_signatures[] = {
 };
 
 typedef struct {
-  GDExtensionObjectPtr gd_object;
-} HelperNodeInstanceData;
-
-typedef struct {
+  JNIEnv *env;
   char* classname;
   char* parent_classname;
   void *classname_stringname;
   void *parent_classname_stringname;
   void *string_name_cache[ARRAY_COUNT(node_virtual_signatures)];
+  jmethodID jmethod_virtuals_cache[ARRAY_COUNT(node_virtual_signatures)];
+  jmethodID jmethod_constructor_cache;
+  jclass dummy_object_class;
+  jmethodID dummy_constructor_cache;
+  jobject dummy_java_object;
+  jclass java_class;
 } HelperNodeClassData;
+
+typedef struct {
+  GDExtensionObjectPtr gd_object;
+  jobject java_object;
+} HelperNodeInstanceData;
 
 char *copy_string(const char *s) {
   size_t bytes = strlen(s) + 1;
@@ -64,6 +75,9 @@ char *copy_string(const char *s) {
 
 typedef struct {
   NodeVirtualMethodType method_type;
+  // NOTE: Classdata is stored because classdata is not passed to
+  // `GDExtensionClassCallVirtualWithData` function
+  HelperNodeClassData *classdata;
 } HelperNodeVirtualCallData;
 
 void *
@@ -77,11 +91,50 @@ helper_node_class_get_virtual_call_data(
     if (string_name_eq(p_name, classdata->string_name_cache[i])) {
       HelperNodeVirtualCallData *res = malloc(sizeof(HelperNodeVirtualCallData));
       res->method_type = i;
+      res->classdata = classdata;
       return res;
     }
   }
 
   return NULL;
+}
+
+void
+handle_virtual_call(
+  HelperNodeInstanceData *instance,
+  HelperNodeVirtualCallData *virtualdata,
+  const GDExtensionConstTypePtr *p_args
+) {
+  JNIEnv *env = virtualdata->classdata->env;
+  const NodeVirtualMethodType method_type = virtualdata->method_type;
+
+  switch (method_type) {
+  case METHOD_ENTER_TREE:
+  case METHOD_EXIT_TREE:
+  case METHOD_GET_CONFIGURATION_WARNINGS:
+  case METHOD_READY:
+    (*env)->CallVoidMethod(env,
+                           instance->java_object,
+                           virtualdata->classdata->jmethod_virtuals_cache[method_type]);
+    return;
+  case METHOD_PHYSICS_PROCESS:
+  case METHOD_PROCESS:
+    (*env)->CallVoidMethod(env,
+                           instance->java_object,
+                           virtualdata->classdata->jmethod_virtuals_cache[method_type],
+                           *(double *)(p_args[0]));
+    return;
+  case METHOD_INPUT:
+  case METHOD_SHORTCUT_INPUT:
+  case METHOD_UNHANDLED_INPUT:
+  case METHOD_UNHANDLED_KEY_INPUT:
+    // TODO Replace dummy object
+    (*env)->CallVoidMethod(env,
+                           instance->java_object,
+                           virtualdata->classdata->jmethod_virtuals_cache[method_type],
+                           virtualdata->classdata->dummy_java_object);
+    return;
+  }
 }
 
 void
@@ -94,51 +147,8 @@ helper_class_call_virtual_with_data(
 ) {
   if (p_virtual_call_userdata == NULL) return;
 
-  HelperNodeVirtualCallData *call_data = p_virtual_call_userdata;
   r_ret = NULL; // NOTE: All Node virtual methods return void
-
-  switch (call_data->method_type) {
-  case METHOD_ENTER_TREE:
-    printf("METHOD_ENTER_TREE\n");
-    // TODO
-    return;
-  case METHOD_EXIT_TREE:
-    printf("METHOD_EXIT_TREE\n");
-    // TODO
-    return;
-  case METHOD_GET_CONFIGURATION_WARNINGS:
-    printf("METHOD_GET_CONFIGURATION_WARNINGS\n");
-    // TODO
-    return;
-  case METHOD_INPUT:
-    printf("METHOD_INPUT");
-    // TODO
-    return;
-  case METHOD_PHYSICS_PROCESS:
-    printf("METHOD_PHYSICS_PROCESS\n");
-    // TODO
-    return;
-  case METHOD_PROCESS:
-    printf("METHOD_PROCESS\n");
-    // TODO
-    return;
-  case METHOD_SHORTCUT_INPUT:
-    printf("METHOD_SHORTCUT_INPUT\n");
-    // TODO
-    return;
-  case METHOD_UNHANDLED_INPUT:
-    printf("METHOD_UNHANDLED_INPUT\n");
-    // TODO
-    return;
-  case METHOD_UNHANDLED_KEY_INPUT:
-    printf("METHOD_UNHANDLED_KEY_INPUT\n");
-    // TODO
-    return;
-  case METHOD_READY:
-    printf("METHOD_READY\n");
-    // TODO
-    return;
-  }
+  handle_virtual_call(p_instance, p_virtual_call_userdata, p_args);
 }
 
 GDExtensionObjectPtr helper_node_class_init(void *class_userdata) {
@@ -146,39 +156,84 @@ GDExtensionObjectPtr helper_node_class_init(void *class_userdata) {
   HelperNodeClassData *classdata = class_userdata;
   HelperNodeInstanceData *instance = malloc(sizeof(HelperNodeInstanceData));
 
-  void *classname_string_name = c_to_gd_string_name(classdata->classname);
-  void *parent_classname_string_name = c_to_gd_string_name(classdata->parent_classname);
+  // NOTE: You may need to make a global reference so that this is not GC'd
+  instance->java_object =
+    (*classdata->env)->NewObject(classdata->env,
+                                 classdata->java_class,
+                                 classdata->jmethod_constructor_cache,
+                                 instance);
 
-  instance->gd_object = gd.api.classdb_construct_object(parent_classname_string_name);
-  gd.api.object_set_instance(instance->gd_object, classname_string_name, instance);
+  if ((*classdata->env)->ExceptionOccurred(classdata->env)) {
+    (*classdata->env)->ExceptionDescribe(classdata->env);
+    free(instance);
+    return NULL; // lmao, I hope I don't segfault
+  }
 
-  gd.misc.destruct_string_name(classname_string_name);
-  gd.misc.destruct_string_name(parent_classname_string_name);
+  instance->gd_object = gd.api.classdb_construct_object(classdata->parent_classname_stringname);
+  gd.api.object_set_instance(instance->gd_object, classdata->classname_stringname, instance);
 
   return instance->gd_object;
 }
 
 void helper_node_class_deinit(void *class_userdata, void *p_instance) {
   printf("deinit\n");
+  if (p_instance == NULL) return;
+
   free(p_instance);
 }
 
 /**
- * Register helper Node class into classdb.
+ * Register helper Node class into classdb and return class information.
  *
  * @param parent_classname C string of the parent of the class.
  * @param classname C string of the helper class's name
  *
  * @return Pointer to classdata which should be passed to `unregister_helper_node_class` when you
- * need to release the class.
+ * need to release the class. If the registering fails, NULL is returned. NULL is safe to pass to
+ * `unregister_helper_node_class`.
  */
 HelperNodeClassData *
 register_helper_node_class(
+  JNIEnv *env,
   const char *parent_classname,
   const char *classname
 ) {
   HelperNodeClassData *classdata = malloc(sizeof(HelperNodeClassData));
 
+  classdata->java_class = (*env)->FindClass(env, classname);
+  if ((*env)->ExceptionOccurred(env)) goto jvm_env_error;
+
+  classdata->jmethod_constructor_cache = (*env)->GetMethodID(env,
+                                                             classdata->java_class,
+                                                             "<init>",
+                                                             helper_node_constructor_signature);
+  if ((*env)->ExceptionOccurred(env)) goto jvm_env_error;
+
+  classdata->dummy_object_class = (*env)->FindClass(env, "java/lang/Object");
+  if ((*env)->ExceptionOccurred(env)) goto jvm_env_error;
+
+  classdata->dummy_constructor_cache = (*env)->GetMethodID(env,
+                                                           classdata->dummy_object_class,
+                                                           "<init>",
+                                                           "()V");
+  if ((*env)->ExceptionOccurred(env)) goto jvm_env_error;
+
+  classdata->dummy_java_object =
+    (*env)->CallStaticObjectMethod(env,
+                                   classdata->dummy_object_class,
+                                   classdata->dummy_constructor_cache);
+  if ((*env)->ExceptionOccurred(env)) goto jvm_env_error;
+
+  for (size_t i = 0; i < ARRAY_COUNT(node_virtual_signatures); i++) {
+    classdata->jmethod_virtuals_cache[i]
+      = (*env)->GetMethodID(env,
+                            classdata->java_class,
+                            node_virtual_signatures[i].name,
+                            node_virtual_signatures[i].signature);
+    if ((*env)->ExceptionOccurred(env)) goto jvm_env_error;
+  }
+
+  classdata->env = env;
   classdata->classname = copy_string(classname);
   classdata->parent_classname = copy_string(parent_classname);
   classdata->classname_stringname = c_to_gd_string_name(classname);
@@ -219,6 +274,11 @@ register_helper_node_class(
                                            &class_info);
 
   return classdata;
+
+  jvm_env_error:
+  (*env)->ExceptionDescribe(env);
+  free(classdata);
+  return NULL;
 }
 
 /**
@@ -227,6 +287,7 @@ register_helper_node_class(
  * @param classdata Pointer to the constructed classdata which will be cleaned up.
  */
 void unregister_helper_node_class(HelperNodeClassData *classdata) {
+  if (classdata == NULL) return;
   gd.api.classdb_unregister_extension_class(gd.misc.p_library, classdata->classname_stringname);
 
   for (size_t i = 0; i < ARRAY_COUNT(classdata->string_name_cache); i++) {

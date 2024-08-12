@@ -6,10 +6,11 @@
 
 ``` bash
 make
-javac src/godot_java/DefaultInitHandler.java
+javac src/godot_java/*.java
 LD_LIBRARY_PATH=/usr/lib/jvm/java-1.11.0-openjdk-amd64/lib/server \
   CLASSPATH="$(readlink -f src/godot_java)" \
   ENTRY_CLASS=DefaultInitHandler \
+  HELPER_NODE_CLASS=DefaultNodeOverride \
   godot src/dummy_godot_project/project.godot
 ```
 
