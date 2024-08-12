@@ -24,6 +24,9 @@
 
 (def dont-use-me-class-name "GDDontUseMe")
 
+(defn sanitize-method-name [s]
+  (if (= s "new") "gd_new" s))
+
 (def dont-use-me-class-lines
   [(package-string base-package-name)
    ""
@@ -59,7 +62,7 @@
                   (if (get m "is_static") "static" nil)
                   (if (get m "is_virtual") nil "final")
                   (resolve-arg-type (get-in m ["return_value" "type"]))
-                  (get m "name")]
+                  (sanitize-method-name (get m "name"))]
                  (filter (complement nil?))
                  (str/join " "))
             (args-info->s (map (fn [arg] {:name (convert-parameter-name (get arg "name"))
