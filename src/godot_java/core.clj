@@ -38,6 +38,12 @@
     (nil? ?s) "void"
     ;; NOTE: It's a C pointer, not handling that
     (str/includes? ?s "*") dont-use-me-class-name
+    (= ?s "bool") "boolean"
+    (= ?s "String") "String"
+    ;; NOTE: Godot "float" should always be double
+    (= ?s "float") "double"
+    ;; NOTE: Godot integers are 64bit which in Java would be a long
+    (= ?s "int") "long"
     ;; FIXME: You can only discard this for enums
     :else (->> (str/split ?s #"::" 2)
                last
