@@ -149,7 +149,9 @@
         (get m "methods"))))
 
 (defn normal-class-m->build-file-export-m [m]
-  (let [classname (str godot-class-prefix (get m "name"))]
+  (let [classname (str godot-class-prefix (get m "name"))
+        ;; NOTE: Virtual methods don't have hashes and thus cannot be called by users
+        methods (filter #(not (get % "is_virtual")) (get m "methods"))]
     {:filename (str classname ".java")
      :lines (concat
              ["import com.sun.jna.Pointer;"
@@ -173,18 +175,17 @@
                                              (map #(format "%s = bridge.stringNameFromString(\"%s\");"
                                                            (string-name-cache-field-name (get % "name"))
                                                            (get % "name"))
-                                                  (get m "methods"))
+                                                  methods)
                                              ;; NOTE: adding L because hash is int64
-                                             ;; FIXME: Virtual methods don't have hashes
                                              (map #(format "%s = bridge.getMethodBind(%s, %s, %sL);"
                                                            (method-bind-cache-field-name (get % "name"))
                                                            self-class-string-name-cache-field-name
                                                            (string-name-cache-field-name (get % "name"))
                                                            (get % "hash"))
-                                                  (get m "methods"))
+                                                  methods)
                                              ["is_initialized = true;"]))
                                (map enum-m->lines (get m "enums"))
-                               (map method-m->lines (get m "methods")))
+                               (map method-m->lines methods))
                               flatten)))}))
 
 #_(defn struct-like-class-m->build-file-export-m [m]
