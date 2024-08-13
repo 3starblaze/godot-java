@@ -1,3 +1,6 @@
+import com.sun.jna.Function;
+import com.sun.jna.Pointer;
+
 interface InitHandler {
     // NOTE: Initially I wanted these constants to be inside an Enum class but that would make the
     // interop messy and I don't wan to deal with that.
@@ -16,6 +19,10 @@ interface InitHandler {
 public class DefaultInitHandler implements InitHandler {
     public static DefaultInitHandler INSTANCE;
 
+    private static long pGetProcAddress = 0L;
+
+    private static long pLibrary = 0L;
+
     private DefaultInitHandler() {}
 
     public synchronized static DefaultInitHandler getInstance() {
@@ -25,13 +32,22 @@ public class DefaultInitHandler implements InitHandler {
         return INSTANCE;
     }
 
+    public static long getPGetProcAddress() {
+        return pGetProcAddress;
+    }
+
+    public static long getPLibrary() {
+        return pLibrary;
+    }
+
     public int getMinInitlevel() {
         return InitHandler.LEVEL_SCENE;
     }
 
     public void initialize(int currentInitLevel) {
-        System.out.println("starting at");
-        System.out.println(currentInitLevel);
+        if (currentInitLevel == InitHandler.LEVEL_SCENE) {
+            test_get_godot_version();
+        }
     }
 
     public void deinitialize(int currentInitLevel) {
@@ -39,10 +55,25 @@ public class DefaultInitHandler implements InitHandler {
         System.out.println(currentInitLevel);
     }
 
+    public void test_get_godot_version() {
+        if (pGetProcAddress == 0) return;
+
+        Function p = Function.getFunction(new Pointer(pGetProcAddress));
+        Function getGodotVersion
+            = Function.getFunction(p.invokePointer(new Object[]{ "get_godot_version" }));
+
+        GDExtensionGodotVersion data = new GDExtensionGodotVersion();
+
+        getGodotVersion.invoke(Void.TYPE, new Object[]{ data });
+
+        System.out.println("Successfully called get_godot_version, here's the result");
+        System.out.println(data);
+    }
+
     public boolean entryFunction(long pGetProcAddress, long pLibrary) {
-        System.out.println("got addresses");
-        System.out.println(pGetProcAddress);
-        System.out.println(pLibrary);
+        DefaultInitHandler.pGetProcAddress = pGetProcAddress;
+        DefaultInitHandler.pLibrary = pLibrary;
+
         return true;
     }
 }

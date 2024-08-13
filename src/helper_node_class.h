@@ -218,10 +218,9 @@ register_helper_node_class(
                                                            "()V");
   if ((*env)->ExceptionOccurred(env)) goto jvm_env_error;
 
-  classdata->dummy_java_object =
-    (*env)->CallStaticObjectMethod(env,
-                                   classdata->dummy_object_class,
-                                   classdata->dummy_constructor_cache);
+  classdata->dummy_java_object = (*env)->NewObject(env,
+                                                   classdata->dummy_object_class,
+                                                   classdata->dummy_constructor_cache);
   if ((*env)->ExceptionOccurred(env)) goto jvm_env_error;
 
   for (size_t i = 0; i < ARRAY_COUNT(node_virtual_signatures); i++) {
