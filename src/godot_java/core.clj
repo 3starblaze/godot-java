@@ -30,7 +30,6 @@
 (defn indent-line [s]
   (str "    " s))
 
-
 (def dont-use-me-class-name "GDDontUseMe")
 
 (defn sanitize-method-name [s]
@@ -141,33 +140,13 @@
   ;; HACK: Hardcoded StringName classname
   (concat
    ["private static boolean is_initialized = false;"
-    (format "private GDStringName %s = null;" self-class-string-name-cache-field-name)]
-   (map #(format "private GDStringName %s = null;"
+    (format "private static GDStringName %s = null;" self-class-string-name-cache-field-name)]
+   (map #(format "private static GDStringName %s = null;"
                  (string-name-cache-field-name (get % "name")))
         (get m "methods"))
-   (map #(format "private Pointer %s = null;"
+   (map #(format "private static Pointer %s = null;"
                  (method-bind-cache-field-name (get % "name")))
         (get m "methods"))))
-
-(defn normal-class-m->cache-initializer-method-lines [m]
-  ;; HACK: Hardcoded stuff
-  ["static void initialize(DefaultInitHandler handler) {"
-   (map indent-line (concat
-                     [(format "%s = handler.stringNameFromString(\"%s\")"
-                              self-class-string-name-cache-field-name
-                              (get m "name"))]
-                     (map #(format "%s = handler.stringNameFromString(\"%s\");"
-                                   (string-name-cache-field-name (get % "name"))
-                                   (get % "name"))
-                          (get m "methods"))
-                     (map #(format "%s = handler.getMethodBind(%s, %s, %s);"
-                                   (method-bind-cache-field-name (get % "name"))
-                                   self-class-string-name-cache-field-name
-                                   (get % "name")
-                                   (get % "hash"))
-                      (get m "methods"))
-                     ["is_initialized = true;"]))
-   "}"])
 
 (defn normal-class-m->build-file-export-m [m]
   (let [classname (str godot-class-prefix (get m "name"))]
@@ -183,10 +162,27 @@
                           (-> (concat
                                (map normal-constant-m->line (get m "constants"))
                                (normal-class-m->cache-field-lines m)
-                               ["boolean isInitialized = false;"
-                                "GodotBridge bridge = null;"]
+                               ["private static boolean isInitialized = false;"
+                                "private static GodotBridge bridge = null;"]
                                ;; TODO: Populate
-                               ["public static void initialize(GodotBridge bridge) {}"]
+                               (block-lines "public static void initialize(GodotBridge bridge)"
+                                            (concat
+                                             [(format "%s = bridge.stringNameFromString(\"%s\");"
+                                                      self-class-string-name-cache-field-name
+                                                      (get m "name"))]
+                                             (map #(format "%s = bridge.stringNameFromString(\"%s\");"
+                                                           (string-name-cache-field-name (get % "name"))
+                                                           (get % "name"))
+                                                  (get m "methods"))
+                                             ;; NOTE: adding L because hash is int64
+                                             ;; FIXME: Virtual methods don't have hashes
+                                             (map #(format "%s = bridge.getMethodBind(%s, %s, %sL);"
+                                                           (method-bind-cache-field-name (get % "name"))
+                                                           self-class-string-name-cache-field-name
+                                                           (string-name-cache-field-name (get % "name"))
+                                                           (get % "hash"))
+                                                  (get m "methods"))
+                                             ["is_initialized = true;"]))
                                (map enum-m->lines (get m "enums"))
                                (map method-m->lines (get m "methods")))
                               flatten)))}))
