@@ -4,3 +4,6 @@
 *.class
 
 build/
+
+# Maven
+target/
