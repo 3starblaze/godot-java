@@ -17,15 +17,15 @@
        (map #(get % "name"))
        set))
 
-(def base-package-name "godot_java.Godot")
-
 (def godot-class-prefix "GD")
 
 ;; NOTE: Some parameters have reserved words as names (e.g. interface, char) and thus I decided
 ;; that it is easier to prefix all parameters to avoid the problem.
 (def godot-parameter-prefix "gd_")
 
-(def java-class-build-dir (io/file "./build/godot_java/godot/"))
+(def java-source-file-root (io/file "./src/main/java/godot_java"))
+(def godot-wrapper-class-package-name "godot_java.Godot")
+(def godot-wrapper-class-output-dir (io/file java-source-file-root "Godot"))
 
 (defn indent-line [s]
   (str "    " s))
@@ -70,6 +70,11 @@
 
 (defn convert-parameter-name [s]
   (str godot-parameter-prefix s))
+
+(defn block-lines [header lines]
+  (concat [(format "%s {" header)]
+          (map indent-line lines)
+          ["}"]))
 
 (defn class-lines [classname parent-classname body-lines]
   (concat
@@ -121,18 +126,70 @@
 (defn normal-constant-m->line [m]
   (format "public final static long %s = %s;" (get m "name") (get m "value")))
 
+(defn string-name-cache-field-name [s]
+  (str "stringNameCache" s))
+
+(defn method-bind-cache-field-name [s]
+  (str "methodBindCache" s))
+
+(defn normal-class-m->string-names-to-cache [m]
+  (map #(vector (get % "name") (get % "hash")) (get m "methods")))
+
+(def self-class-string-name-cache-field-name "selfClassStringName")
+
+(defn normal-class-m->cache-field-lines [m]
+  ;; HACK: Hardcoded StringName classname
+  (concat
+   ["private static boolean is_initialized = false;"
+    (format "private GDStringName %s = null;" self-class-string-name-cache-field-name)]
+   (map #(format "private GDStringName %s = null;"
+                 (string-name-cache-field-name (get % "name")))
+        (get m "methods"))
+   (map #(format "private Pointer %s = null;"
+                 (method-bind-cache-field-name (get % "name")))
+        (get m "methods"))))
+
+(defn normal-class-m->cache-initializer-method-lines [m]
+  ;; HACK: Hardcoded stuff
+  ["static void initialize(DefaultInitHandler handler) {"
+   (map indent-line (concat
+                     [(format "%s = handler.stringNameFromString(\"%s\")"
+                              self-class-string-name-cache-field-name
+                              (get m "name"))]
+                     (map #(format "%s = handler.stringNameFromString(\"%s\");"
+                                   (string-name-cache-field-name (get % "name"))
+                                   (get % "name"))
+                          (get m "methods"))
+                     (map #(format "%s = handler.getMethodBind(%s, %s, %s);"
+                                   (method-bind-cache-field-name (get % "name"))
+                                   self-class-string-name-cache-field-name
+                                   (get % "name")
+                                   (get % "hash"))
+                      (get m "methods"))
+                     ["is_initialized = true;"]))
+   "}"])
+
 (defn normal-class-m->build-file-export-m [m]
   (let [classname (str godot-class-prefix (get m "name"))]
     {:filename (str classname ".java")
-     :lines (class-lines classname
-                         (if-let [inherits (get m "inherits")]
-                           (resolve-arg-type inherits)
-                           "Object")
-                         (-> (concat
-                              (map normal-constant-m->line (get m "constants"))
-                              (map enum-m->lines (get m "enums"))
-                              (map method-m->lines (get m "methods")))
-                             flatten))}))
+     :lines (concat
+             ["import com.sun.jna.Pointer;"
+              "import godot_java.GodotBridge;"
+              ""]
+             (class-lines classname
+                          (if-let [inherits (get m "inherits")]
+                            (resolve-arg-type inherits)
+                            "Object")
+                          (-> (concat
+                               (map normal-constant-m->line (get m "constants"))
+                               (normal-class-m->cache-field-lines m)
+                               ["boolean isInitialized = false;"
+                                "GodotBridge bridge = null;"]
+                               ;; TODO: Populate
+                               ["public static void initialize(GodotBridge bridge) {}"]
+                               (map enum-m->lines (get m "enums"))
+                               (map method-m->lines (get m "methods")))
+                              flatten)))}))
 
 #_(defn struct-like-class-m->build-file-export-m [m]
   (let [classname (resolve-arg-type (get m "name"))]
@@ -153,12 +210,28 @@
        (filter #(not (#{"Nil" "bool" "int" "float" "String"}
                       (get % "name"))))
        (map (fn [m]
-         (let [classname (resolve-arg-type (get m "name"))]
-           {:filename (str classname ".java")
-            ;; TODO Implement body
-            :lines (class-lines classname
-                                "Object"
-                                (flatten (map enum-m->lines (get m "enums"))))})))))
+              (let [classname (resolve-arg-type (get m "name"))
+                    filename (str classname ".java")]
+                ;; NOTE: Not the cleanest approach but will do for now
+                (if (= (get m "name") "StringName")
+                  {:filename filename
+                   :lines (concat
+                           ["import com.sun.jna.Pointer;"
+                            ""]
+                           (class-lines classname
+                                        "Object"
+                                        (concat
+                                         (map enum-m->lines (get m "enums"))
+                                         ["private Pointer nativeAddress;"]
+                                         (block-lines (str "public " classname "(Pointer p)")
+                                                      ["nativeAddress = p;"])
+                                         (block-lines "public Pointer getNativeAddress()"
+                                                      ["return nativeAddress;"]))))}
+                  {:filename filename
+                   ;; TODO Implement body
+                   :lines (class-lines classname
+                                       "Object"
+                                       (flatten (map enum-m->lines (get m "enums"))))}))))))
 
 (defn make-global-scope-class-file-export-m []
   (let [classname (str godot-class-prefix "GlobalScope")]
@@ -181,8 +254,57 @@
                                (map #(update % "name" (fn [s] (subs s (count "Variant.")))))
                                (map enum-m->lines))))}))
 
+(defn make-godot-bridge-class-file-export-m [gd-classnames]
+  (let [classname "GodotBridge"
+        preloaded-functions ["object_method_bind_call"
+                             "classdb_get_method_bind"
+                             "string_name_new_with_utf8_chars"
+                             "object_method_bind_ptrcall"]]
+    {:filename (str classname ".java")
+     :lines (concat
+             ["import com.sun.jna.Function;"
+              "import com.sun.jna.Memory;"
+              "import com.sun.jna.Pointer;"
+              (format "import %s.*;" godot-wrapper-class-package-name)]
+             (class-lines
+              classname "Object"
+              (concat
+               ["private Function pGetProcAddress;"
+                "private Pointer pLibrary;"]
+               (map #(format "private Function %s;" %) preloaded-functions)
+               (block-lines (str classname "(Function pGetProcAddress, Pointer pLibrary)")
+                            (concat
+                             ["this.pGetProcAddress = pGetProcAddress;"
+                              "this.pLibrary = pLibrary;"
+                              ""]
+                             (map #(format "%s = getGodotFunction(\"%s\");" % %)
+                                  preloaded-functions)
+                             (map #(format "%s.initialize(this);" (resolve-arg-type %))
+                                  gd-classnames)))
+               (block-lines "public Function getGodotFunction(String s)"
+                            [(str "return Function.getFunction"
+                                  "(pGetProcAddress.invokePointer(new Object[]{ s }));")])
+              ;; FIXME: Hardcoded StringName classname
+               (block-lines "public GDStringName stringNameFromString(String s)"
+                           ;; FIXME: Hardcoded StringName size
+                            ["Memory mem = new Memory(8);"
+                             (str "string_name_new_with_utf8_chars"
+                                  ".invokePointer(new Object[]{ mem, s });")
+                             "return new GDStringName(mem);"])
+               (block-lines (str "public Pointer getMethodBind"
+                                 "(GDStringName classname, GDStringName methodName, long hash)")
+                            [(str "return classdb_get_method_bind.invokePointer"
+                                  "(new Object[]{ classname, methodName, hash });")]))))}))
+
 (defn generate-and-save-java-classes []
-  (.mkdirs java-class-build-dir)
+  (.mkdirs godot-wrapper-class-output-dir)
+  (let [{:keys [filename lines]}
+        (make-godot-bridge-class-file-export-m (map #(get % "name") (get api "classes")))]
+    (spit (io/file java-source-file-root filename)
+          (str/join "\n" (concat
+                          ["package godot_java;"
+                           ""]
+                          lines))))
   (doseq [{:keys [filename lines]}
           (concat
            [{:filename (str dont-use-me-class-name ".java")
@@ -191,9 +313,9 @@
             (make-global-scope-class-file-export-m)]
            (map normal-class-m->build-file-export-m (get api "classes"))
            (make-builtin-class-file-export-ms))]
-    (spit (io/file java-class-build-dir filename)
+    (spit (io/file godot-wrapper-class-output-dir filename)
           (str/join "\n" (concat
-                          [(format "package %s;" base-package-name)
+                          [(format "package %s;" godot-wrapper-class-package-name)
                            ""]
                           lines)))))
 
