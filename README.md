@@ -6,7 +6,7 @@
 
 ``` bash
 make
-mvn package
+mvn assembly:assembly -DdescriptorId=jar-with-dependencies
 # NOTE: On my laptop there's a bug in which Godot complains about not being able to compile shaders
 # and spamming the console with internal source files. Deleting .godot folder before launching godot
 # fixes the issue. This is especially annoying because godot has to be force-killed when it's
