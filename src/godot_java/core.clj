@@ -165,8 +165,15 @@
                                (map normal-constant-m->line (get m "constants"))
                                (normal-class-m->cache-field-lines m)
                                ["private static boolean isInitialized = false;"
-                                "private static GodotBridge bridge = null;"]
-                               ;; TODO: Populate
+                                "private static GodotBridge bridge = null;"
+                                "private Pointer nativeAddress;"]
+                               ;; NOTE: Internal constructor for turning raw pointers into
+                               ;; usable Java instances
+                               (block-lines (format "public %s(Pointer p)" classname)
+                                            (concat
+                                             ;; NOTE: Java requires calling super constructor
+                                             (when (get m "inherits") ["super(p);"])
+                                             ["nativeAddress = p;"]))
                                (block-lines "public static void initialize(GodotBridge bridge)"
                                             (concat
                                              [(format "%s = bridge.stringNameFromString(\"%s\");"
