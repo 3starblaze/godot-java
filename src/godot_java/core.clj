@@ -44,6 +44,14 @@
   ["// This is a dummy class for types that could not be converted (C pointers)"
    (format "class %s extends Object {}" dont-use-me-class-name)])
 
+(def preamble-lines
+  "Lines that should be inserted in the beginning of each file (after package name)."
+  ["import com.sun.jna.Pointer;"
+   "import java.util.Collections;"
+   "import java.util.Map;"
+   "import java.util.HashMap;"
+   ""])
+
 (defn resolve-arg-type [?s]
   (if (nil? ?s)
     "void"
@@ -100,27 +108,39 @@
    ["}"]))
 
 (defn enum-m->lines [m]
-  (concat
-   [(format "public enum %s {" (get m "name"))]
-   ;; TODO Handle bitfields
-   (let [n (count (get m "values"))]
-     (->> (get m "values")
-          ;: Make enum member definition line
-          (map #(format "%s(%s)"
-                        (get % "name")
-                        ;; NOTE: We add "L" to tell Java that we are using longs
-                        (str (get % "value") "L")))
-          ;; Add a semicolon for the last line and comma for other lines
-          (map-indexed (fn [i s] (str s (if (= i (dec n)) ";" ","))))
-          (map indent-line)))
-   ;; NOTE: This adds the boilerplate constructor that lets us pass values to enums
-   (map indent-line
-        ["public final long value;"
-         ""
-         (format "private %s(long value) {" (get m "name"))
-         (indent-line "this.value = value;")
-         "}"])
-   ["}"]))
+  ;; TODO Handle bitfields
+  (block-lines (str "public enum " (get m "name"))
+               (concat
+                (let [n (count (get m "values"))]
+                  (->> (get m "values")
+                       ;: Make enum member definition line
+                       (map #(format "%s(%s)"
+                                     (get % "name")
+                                     ;; NOTE: We add "L" to tell Java that we are using longs
+                                     (str (get % "value") "L")))
+                       ;; Add a semicolon for the last line and comma for other lines
+                       (map-indexed (fn [i s] (str s (if (= i (dec n)) ";" ","))))))
+                ;; NOTE: Long with big L because we have to use classes for types
+                [(format "private static Map<Long, %s> reverseMapping;" (get m "name"))]
+                (block-lines "static"
+                             (concat
+                              [(format "Map<Long, %s> tmp = new HashMap();" (get m "name"))]
+                              ;; NOTE: "L" because of Java long
+                              (map #(format "tmp.put(%sL, %s);" (get % "value") (get % "name"))
+                                   (get m "values"))
+                              ["reverseMapping = Collections.unmodifiableMap(tmp);"]))
+                (concat
+                 ["public final long value;"
+                  ""]
+                 (block-lines (format "private %s(long value)" (get m "name"))
+                              ["this.value = value;"])
+                 [""]
+                 (block-lines (format "public static %s fromValue(long v)" (get m "name"))
+                              (concat
+                               [(format "%s res = reverseMapping.get(v);" (get m "name"))]
+                               (block-lines "if (res == null)"
+                                            [(format "throw new IllegalArgumentException(\"%s\");"
+                                                     "Value could not be converted to an enum!")])))))))
 
 (defn normal-constant-m->line [m]
   (format "public final static long %s = %s;" (get m "name") (get m "value")))
@@ -154,8 +174,7 @@
         methods (filter #(not (get % "is_virtual")) (get m "methods"))]
     {:filename (str classname ".java")
      :lines (concat
-             ["import com.sun.jna.Pointer;"
-              "import godot_java.GodotBridge;"
+             ["import godot_java.GodotBridge;"
               ""]
              (class-lines classname
                           (if-let [inherits (get m "inherits")]
@@ -219,18 +238,15 @@
                 ;; NOTE: Not the cleanest approach but will do for now
                 (if (= (get m "name") "StringName")
                   {:filename filename
-                   :lines (concat
-                           ["import com.sun.jna.Pointer;"
-                            ""]
-                           (class-lines classname
-                                        "Object"
-                                        (concat
-                                         (map enum-m->lines (get m "enums"))
-                                         ["private Pointer nativeAddress;"]
-                                         (block-lines (str "public " classname "(Pointer p)")
-                                                      ["nativeAddress = p;"])
-                                         (block-lines "public Pointer getNativeAddress()"
-                                                      ["return nativeAddress;"]))))}
+                   :lines (class-lines classname
+                                       "Object"
+                                       (concat
+                                        (map enum-m->lines (get m "enums"))
+                                        ["private Pointer nativeAddress;"]
+                                        (block-lines (str "public " classname "(Pointer p)")
+                                                     ["nativeAddress = p;"])
+                                        (block-lines "public Pointer getNativeAddress()"
+                                                     ["return nativeAddress;"])))}
                   {:filename filename
                    ;; TODO Implement body
                    :lines (class-lines classname
@@ -321,6 +337,7 @@
           (str/join "\n" (concat
                           [(format "package %s;" godot-wrapper-class-package-name)
                            ""]
+                          preamble-lines
                           lines)))))
 
 (comment (generate-and-save-java-classes))
