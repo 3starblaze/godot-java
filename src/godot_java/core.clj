@@ -27,6 +27,17 @@
 (def godot-wrapper-class-package-name "godot_java.Godot")
 (def godot-wrapper-class-output-dir (io/file java-source-file-root "Godot"))
 
+(def godot-build-configuration "float_64")
+
+(def struct-like-classes-set
+  (as-> api it
+    (get it "builtin_class_member_offsets")
+    (filter #(= (get % "build_configuration") godot-build-configuration) it)
+    (first it)
+    (get it "classes")
+    (map #(get % "name") it)
+    (set it)))
+
 (defn indent-line [s]
   (str "    " s))
 
@@ -46,7 +57,8 @@
 
 (def preamble-lines
   "Lines that should be inserted in the beginning of each file (after package name)."
-  ["import com.sun.jna.Pointer;"
+  ["import com.sun.jna.Memory;"
+   "import com.sun.jna.Pointer;"
    "import java.util.Collections;"
    "import java.util.Map;"
    "import java.util.HashMap;"
@@ -223,19 +235,34 @@
                                (map method-m->lines methods))
                               flatten)))}))
 
-#_(defn struct-like-class-m->build-file-export-m [m]
-  (let [classname (resolve-arg-type (get m "name"))]
-    {:filename (str classname ".java")
-     ;; TODO: Implement body
-     :lines (class-lines classname "Object" [])}))
-
-#_(defn make-struct-like-classes []
-  (let [classes (as-> api it
+(defn make-struct-like-class-lines [m]
+  (let [classname (str godot-class-prefix (get m "name"))
+        members (as-> api it
                   (get it "builtin_class_member_offsets")
-                  (filter #(= (get % "build_configuration") "float_64") it)
+                  (filter #(= (get % "build_configuration") godot-build-configuration) it)
                   (first it)
-                  (get it "classes"))]
-    (map struct-like-class-m->build-file-export-m classes)))
+                  (get it "classes")
+                  (filter #(= (get % "name") (get m "name")) it)
+                  (first it)
+                  (get it "members"))
+        resolve-meta #(case %
+                        "float" "float"
+                        "int32" "int"
+                        (str godot-class-prefix %))
+        member-init-string #(str (get % "member")
+                                 " = "
+                                 (case (get % "meta")
+                                   "float" (format "m.getFloat(offset + %s);" (get % "offset"))
+                                   "int32" (format "m.getInt(offset + %s);" (get % "offset"))
+                                   (format "new %s(m, %s);"
+                                           (str godot-class-prefix (get % "meta"))
+                                           (get % "offset"))))]
+    (concat
+     (map #(format "public %s %s;"
+                   (resolve-meta (get % "meta"))
+                   (get % "member")) members)
+     (block-lines (format "%s(Memory m, long offset)" classname)
+                  (map member-init-string members)))))
 
 (defn make-builtin-class-file-export-ms []
   (->> (get api "builtin_classes")
@@ -257,10 +284,12 @@
                                         (block-lines "public Pointer getNativeAddress()"
                                                      ["return nativeAddress;"])))}
                   {:filename filename
-                   ;; TODO Implement body
                    :lines (class-lines classname
                                        "Object"
-                                       (flatten (map enum-m->lines (get m "enums"))))}))))))
+                                       (concat
+                                        (flatten (map enum-m->lines (get m "enums")))
+                                        (when (struct-like-classes-set (get m "name"))
+                                          (make-struct-like-class-lines m))))}))))))
 
 (defn make-global-scope-class-file-export-m []
   (let [classname (str godot-class-prefix "GlobalScope")]
