@@ -38,6 +38,27 @@
     (map #(get % "name") it)
     (set it)))
 
+(def size-mappings
+  (as-> api it
+    (get it "builtin_class_sizes")
+    (filter #(= (get % "build_configuration") godot-build-configuration) it)
+    (first it)
+    (get it "sizes")
+    (map #(vector (get % "name") (get % "size")) it)
+    (into {} it)))
+
+(def meta-type->java-type
+  {"float" "float"
+   "double" "double"
+   "uint8" "byte"
+   "uint16" "short"
+   "uint32" "int"
+   "uint64" "long"
+   "int8" "byte"
+   "int16" "short"
+   "int32" "int"
+   "int64" "long"})
+
 (defn indent-line [s]
   (str "    " s))
 
@@ -245,24 +266,41 @@
                   (filter #(= (get % "name") (get m "name")) it)
                   (first it)
                   (get it "members"))
-        resolve-meta #(case %
-                        "float" "float"
-                        "int32" "int"
-                        (str godot-class-prefix %))
-        member-init-string #(str (get % "member")
-                                 " = "
-                                 (case (get % "meta")
-                                   "float" (format "m.getFloat(offset + %s);" (get % "offset"))
-                                   "int32" (format "m.getInt(offset + %s);" (get % "offset"))
-                                   (format "new %s(m, %s);"
-                                           (str godot-class-prefix (get % "meta"))
-                                           (get % "offset"))))]
+        members-info (map (fn [member]
+                            (let [m-meta (get member "meta")
+                                  m-name (get member "member")
+                                  offset (get member "offset")
+                                  [primitive? typename] (if-let [t (get meta-type->java-type m-meta)]
+                                                          [true t]
+                                                          [false (str godot-class-prefix m-meta)])]
+                              {:member-def-string (format "public %s %s;" typename m-name)
+                               :init-string (str m-name " = "
+                                                 (format (if primitive?
+                                                           "m.get%s(offset + %s);"
+                                                           "new %s(m, %s);")
+                                                         (if primitive?
+                                                           (str/capitalize typename)
+                                                           typename)
+                                                         offset))
+                               :memory-set-string (format (if primitive?
+                                                            (format "m.set%s(offset + %s, %s);"
+                                                                    (str/capitalize typename)
+                                                                    offset
+                                                                    m-name)
+                                                            (format "%s.intoMemory(m, %s);"
+                                                                    m-name
+                                                                    offset)))}))
+                          members)]
     (concat
-     (map #(format "public %s %s;"
-                   (resolve-meta (get % "meta"))
-                   (get % "member")) members)
+     (map :member-def-string members-info)
      (block-lines (format "%s(Memory m, long offset)" classname)
-                  (map member-init-string members)))))
+                  (map :init-string members-info))
+     (block-lines "public void intoMemory(Memory m, long offset)"
+                  (map :memory-set-string members-info))
+     (block-lines "public Memory intoMemory()"
+                  [(format "Memory m = new Memory(%s);" (get size-mappings (get m "name")))
+                   "intoMemory(m, 0);"
+                   "return m;"]))))
 
 (defn make-builtin-class-file-export-ms []
   (->> (get api "builtin_classes")
