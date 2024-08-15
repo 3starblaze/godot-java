@@ -17,8 +17,6 @@
        (map #(get % "name"))
        set))
 
-(def godot-class-prefix "GD")
-
 ;; NOTE: Some parameters have reserved words as names (e.g. interface, char) and thus I decided
 ;; that it is easier to prefix all parameters to avoid the problem.
 (def godot-parameter-prefix "gd_")
@@ -28,6 +26,12 @@
 (def godot-wrapper-class-output-dir (io/file java-source-file-root "Godot"))
 
 (def godot-build-configuration "float_64")
+
+(defn godot-classname->java-classname [classname]
+  (str "GD" classname))
+
+(def string-name-java-classname
+  (godot-classname->java-classname "StringName"))
 
 (def struct-like-classes-set
   (as-> api it
@@ -99,14 +103,8 @@
         (= s "float") "double"
         ;; NOTE: Godot integers are 64bit which in Java would be a long
         (= s "int") "long"
-        (global-enum-set s) (str "GDGlobalScope." s)
-        :else (str godot-class-prefix s)))))
-
-(defn resolve-member-type [s]
-  (case s
-    "float" "float"
-    "int32" "int"
-    (str godot-class-prefix s)))
+        (global-enum-set s) (godot-classname->java-classname (str "GlobalScope." s))
+        :else (godot-classname->java-classname s)))))
 
 (defn convert-parameter-name [s]
   (str godot-parameter-prefix s))
@@ -190,11 +188,13 @@
 (def self-class-string-name-cache-field-name "selfClassStringName")
 
 (defn normal-class-m->cache-field-lines [m]
-  ;; HACK: Hardcoded StringName classname
   (concat
    ["private static boolean is_initialized = false;"
-    (format "private static GDStringName %s = null;" self-class-string-name-cache-field-name)]
-   (map #(format "private static GDStringName %s = null;"
+    (format "private static %s %s = null;"
+            string-name-java-classname
+            self-class-string-name-cache-field-name)]
+   (map #(format "private static %s %s = null;"
+                 string-name-java-classname
                  (string-name-cache-field-name (get % "name")))
         (get m "methods"))
    (map #(format "private static Pointer %s = null;"
@@ -202,7 +202,7 @@
         (get m "methods"))))
 
 (defn normal-class-m->build-file-export-m [m]
-  (let [classname (str godot-class-prefix (get m "name"))
+  (let [classname (godot-classname->java-classname (get m "name"))
         ;; NOTE: Virtual methods don't have hashes and thus cannot be called by users
         methods (filter #(not (get % "is_virtual")) (get m "methods"))]
     {:filename (str classname ".java")
@@ -257,7 +257,7 @@
                               flatten)))}))
 
 (defn make-struct-like-class-lines [m]
-  (let [classname (str godot-class-prefix (get m "name"))
+  (let [classname (godot-classname->java-classname (get m "name"))
         members (as-> api it
                   (get it "builtin_class_member_offsets")
                   (filter #(= (get % "build_configuration") godot-build-configuration) it)
@@ -270,9 +270,11 @@
                             (let [m-meta (get member "meta")
                                   m-name (get member "member")
                                   offset (get member "offset")
-                                  [primitive? typename] (if-let [t (get meta-type->java-type m-meta)]
-                                                          [true t]
-                                                          [false (str godot-class-prefix m-meta)])]
+
+                                  [primitive? typename]
+                                  (if-let [t (get meta-type->java-type m-meta)]
+                                    [true t]
+                                    [false (godot-classname->java-classname m-meta)])]
                               {:member-def-string (format "public %s %s;" typename m-name)
                                :init-string (str m-name " = "
                                                  (format (if primitive?
@@ -330,7 +332,7 @@
                                           (make-struct-like-class-lines m))))}))))))
 
 (defn make-global-scope-class-file-export-m []
-  (let [classname (str godot-class-prefix "GlobalScope")]
+  (let [classname (godot-classname->java-classname "GlobalScope")]
     {:filename (str classname ".java")
      :lines (class-lines classname
                          "Object"
@@ -340,7 +342,7 @@
                                (map enum-m->lines))))}))
 
 (defn make-variant-class-file-export-m []
-  (let [classname (str godot-class-prefix "Variant")]
+  (let [classname (godot-classname->java-classname "Variant")]
     {:filename (str classname ".java")
      :lines (class-lines classname
                          "Object"
@@ -386,18 +388,20 @@
                (block-lines "public Function getGodotFunction(String s)"
                             [(str "return Function.getFunction"
                                   "(pGetProcAddress.invokePointer(new Object[]{ s }));")])
-              ;; FIXME: Hardcoded StringName classname
-               (block-lines "public GDStringName stringNameFromString(String s)"
-                           ;; FIXME: Hardcoded StringName size
+               (block-lines (format "public %s stringNameFromString(String s)"
+                                    (godot-classname->java-classname "StringName"))
                             (concat
-                             ["Memory mem = new Memory(8);"]
+                             [(format "Memory mem = new Memory(%s);" (get size-mappings "StringName"))]
                              (invoke-pointer-lines "string_name_new_with_utf8_chars" ["mem" "s"])
-                             ["return new GDStringName(mem);"]))
-               (block-lines (str "public Pointer getMethodBind"
-                                 "(GDStringName classname, GDStringName methodName, long hash)")
+                             [(format "return new %s(mem);" string-name-java-classname)]))
+               (block-lines (format (str "public Pointer getMethodBind"
+                                         "(%s classname, %s methodName, long hash)")
+                                    string-name-java-classname
+                                    string-name-java-classname)
                             (invoke-pointer-lines "return classdb_get_method_bind"
                                                   ["classname" "methodName" "hash"]))
-               (block-lines "public Pointer getNewInstancePointer(GDStringName string_name)"
+               (block-lines (format "public Pointer getNewInstancePointer(%s string_name)"
+                                    string-name-java-classname)
                             (invoke-pointer-lines "return classdb_construct_object"
                                                   ["string_name"])))))}))
 
