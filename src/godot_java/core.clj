@@ -356,7 +356,12 @@
                              "classdb_get_method_bind"
                              "string_name_new_with_utf8_chars"
                              "object_method_bind_ptrcall"
-                             "classdb_construct_object"]]
+                             "classdb_construct_object"]
+        invoke-pointer-lines (fn [method args]
+                               (concat
+                                [(str method ".invokePointer(new Object[]{")]
+                                (map indent-line (map #(str % ",") args))
+                                ["});"]))]
     {:filename (str classname ".java")
      :lines (concat
              ["import com.sun.jna.Function;"
@@ -384,16 +389,17 @@
               ;; FIXME: Hardcoded StringName classname
                (block-lines "public GDStringName stringNameFromString(String s)"
                            ;; FIXME: Hardcoded StringName size
-                            ["Memory mem = new Memory(8);"
-                             (str "string_name_new_with_utf8_chars"
-                                  ".invokePointer(new Object[]{ mem, s });")
-                             "return new GDStringName(mem);"])
+                            (concat
+                             ["Memory mem = new Memory(8);"]
+                             (invoke-pointer-lines "string_name_new_with_utf8_chars" ["mem" "s"])
+                             ["return new GDStringName(mem);"]))
                (block-lines (str "public Pointer getMethodBind"
                                  "(GDStringName classname, GDStringName methodName, long hash)")
-                            [(str "return classdb_get_method_bind.invokePointer"
-                                  "(new Object[]{ classname, methodName, hash });")])
+                            (invoke-pointer-lines "return classdb_get_method_bind"
+                                                  ["classname" "methodName" "hash"]))
                (block-lines "public Pointer getNewInstancePointer(GDStringName string_name)"
-                            ["return new Pointer(classdb_construct_object(string_name));"]))))}))
+                            (invoke-pointer-lines "return classdb_construct_object"
+                                                  ["string_name"])))))}))
 
 (defn generate-and-save-java-classes []
   (.mkdirs godot-wrapper-class-output-dir)
