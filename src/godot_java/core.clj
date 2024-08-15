@@ -193,6 +193,15 @@
                                              ;; NOTE: Java requires calling super constructor
                                              (when (get m "inherits") ["super(p);"])
                                              ["nativeAddress = p;"]))
+                               (block-lines (format "%s %s()"
+                                                    (if (get m "is_instantiable") "public" "private")
+                                                    classname)
+                                            (concat
+                                             ;; NOTE: Hacky way to avoid the shackles of having to
+                                             ;; call the super constructor as the first line
+                                             (when (get m "inherits") ["super(null);"])
+                                             [(format "nativeAddress = bridge.getNewInstancePointer(%s);"
+                                                      self-class-string-name-cache-field-name)]))
                                (block-lines "public static void initialize(GodotBridge bridge)"
                                             (concat
                                              [(format "%s = bridge.stringNameFromString(\"%s\");"
@@ -279,7 +288,8 @@
         preloaded-functions ["object_method_bind_call"
                              "classdb_get_method_bind"
                              "string_name_new_with_utf8_chars"
-                             "object_method_bind_ptrcall"]]
+                             "object_method_bind_ptrcall"
+                             "classdb_construct_object"]]
     {:filename (str classname ".java")
      :lines (concat
              ["import com.sun.jna.Function;"
@@ -314,7 +324,9 @@
                (block-lines (str "public Pointer getMethodBind"
                                  "(GDStringName classname, GDStringName methodName, long hash)")
                             [(str "return classdb_get_method_bind.invokePointer"
-                                  "(new Object[]{ classname, methodName, hash });")]))))}))
+                                  "(new Object[]{ classname, methodName, hash });")])
+               (block-lines "public Pointer getNewInstancePointer(GDStringName string_name)"
+                            ["return new Pointer(classdb_construct_object(string_name));"]))))}))
 
 (defn generate-and-save-java-classes []
   (.mkdirs godot-wrapper-class-output-dir)
