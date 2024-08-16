@@ -219,7 +219,8 @@
                               (if (zero? n)
                                 (format "Memory %s = null;" var-name)
                                 (format "Memory %s = new Memory(%s);" var-name n)))
-        method-bind (method-bind-cache-field-name (get m "name"))]
+        method-bind (method-bind-cache-field-name (get m "name"))
+        i->arg-mem-var #(str "arg" %)]
     (block-lines (format "%s(%s)"
                          (->> ["public"
                                (when (get m "is_static") "static")
@@ -240,7 +241,7 @@
                      (memory-alloc-string "res" ret-bytes)]
                     (->
                      (map (fn [i [arg-typeclass arg-java-type byte-count] arg-name]
-                            (let [mem-var-name (str "arg" i)]
+                            (let [mem-var-name (i->arg-mem-var i)]
                               [(memory-alloc-string mem-var-name byte-count)
                                (format "args.setPointer(%s, %s);"
                                        (* i void-pointer-size) mem-var-name)
@@ -262,7 +263,10 @@
                           args-memory-info
                           args-names)
                      flatten)
-                    [(format "bridge.pointerCall(%s, nativeAddress, args, res)" method-bind)])))))
+                    [(format "bridge.pointerCall(%s, nativeAddress, args, res)" method-bind)]
+                    (map (fn [i] (str (i->arg-mem-var i) ".free();")) (range arg-count))
+                    (when-not (zero? arg-count) ["args.free();"])
+                    (when-not (zero? ret-bytes) ["res.free();"]))))))
 
 (defn enum-m->lines [m]
   ;; TODO Handle bitfields
