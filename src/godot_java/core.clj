@@ -26,6 +26,10 @@
 (def godot-wrapper-class-output-dir (io/file java-source-file-root "Godot"))
 
 (def godot-build-configuration "float_64")
+(def void-pointer-size (if (or (= godot-build-configuration "float_64")
+                               (= godot-build-configuration "double_64"))
+                         8
+                         4))
 
 (defn godot-classname->java-classname [classname]
   (str "GD" classname))
@@ -40,6 +44,7 @@
     (first it)
     (get it "classes")
     (map #(get % "name") it)
+    (map godot-classname->java-classname it)
     (set it)))
 
 (def size-mappings
@@ -50,18 +55,6 @@
     (get it "sizes")
     (map #(vector (get % "name") (get % "size")) it)
     (into {} it)))
-
-(def meta-type->java-type
-  {"float" "float"
-   "double" "double"
-   "uint8" "byte"
-   "uint16" "short"
-   "uint32" "int"
-   "uint64" "long"
-   "int8" "byte"
-   "int16" "short"
-   "int32" "int"
-   "int64" "long"})
 
 (defn indent-line [s]
   (str "    " s))
@@ -89,22 +82,97 @@
    "import java.util.HashMap;"
    ""])
 
-(defn resolve-arg-type [?s]
-  (if (nil? ?s)
-    "void"
-    ;; FIXME: You can only discard this for enums
-    (let [s (last (str/split ?s #"::" 2))]
-      (cond
-        ;; NOTE: It's a C pointer, not handling that
-        (str/includes? s "*") dont-use-me-class-name
-        (= s "bool") "boolean"
-        (= s "String") "String"
-        ;; NOTE: Godot "float" should always be double
-        (= s "float") "double"
-        ;; NOTE: Godot integers are 64bit which in Java would be a long
-        (= s "int") "long"
-        (global-enum-set s) (godot-classname->java-classname (str "GlobalScope." s))
-        :else (godot-classname->java-classname s)))))
+(def meta-type->java-type
+  {"float" "float"
+   "double" "double"
+   "uint8" "byte"
+   "uint16" "short"
+   "uint32" "int"
+   "uint64" "long"
+   "int8" "byte"
+   "int16" "short"
+   "int32" "int"
+   "int64" "long"})
+
+(def java-type->bytes
+  {"float" 4
+   "double" 8
+   "boolean" 1
+   "byte" 1
+   "short" 2
+   "int" 4
+   "long" 8})
+
+
+(def godot-type-overrides
+  {"Nil" "void"
+   "bool" "boolean"
+   "int" "long"
+   "float" "double"
+   "String" "String"})
+
+(defn parameter-m->java-type [m]
+  (let [type-meta (get m "meta")
+        type-type (get m "type")
+        overriden-type (get godot-type-overrides type-type)
+        fetched-size (get size-mappings type-type)]
+    (cond
+      (nil? m) "void"
+      type-meta (get meta-type->java-type type-meta)
+      overriden-type overriden-type
+      fetched-size fetched-size
+      ;; NOTE: It's a C pointer, not handling that
+      (str/includes? type-type "*") dont-use-me-class-name
+      :else (let [[prefix t] (let [res (str/split (get m "type") #"::" 2)]
+                               (if (= (count res) 2)
+                                 [(first res) (second res)]
+                                 [nil (first res)]))]
+              (godot-classname->java-classname
+               (case prefix
+                 "typedarray" "Array"
+                 "enum" (if (global-enum-set t) (str "GlobalScope." t) t)
+                 t))))))
+
+(defn parameter-m->memory-info
+  "Return a tuple of [typeclass java-type byte-count] for given parameter map.
+
+  typeclass is either:
+  - :primitive -- basic numeric type
+  - :opaque -- an object instance (void pointer)
+  - :enum -- Java class, Godot int64
+  - :struct-like -- Java class, Godot struct"
+  [m]
+  (let [type-meta (get m "meta")
+        type-type (get m "type")
+        overriden-type (get godot-type-overrides type-type)
+        fetched-size (get size-mappings type-type)]
+    (cond
+      (nil? m) [:void "void" 0]
+      type-meta (let [t (get meta-type->java-type type-meta)]
+                  [:primitive t (get java-type->bytes t)])
+      overriden-type (if (= overriden-type "String")
+                       [:opaque "String" void-pointer-size]
+                       [:primitive overriden-type (get java-type->bytes overriden-type)])
+      fetched-size (let [t (godot-classname->java-classname type-type)]
+                     (if (struct-like-classes-set t)
+                       [:struct-like t fetched-size]
+                       [:opaque t fetched-size]))
+      ;; NOTE: It's a C pointer, not handling that
+      (str/includes? type-type "*") [:opaque dont-use-me-class-name void-pointer-size]
+      :else (let [[prefix t] (let [res (str/split (get m "type") #"::" 2)]
+                               (if (= (count res) 2)
+                                 [(first res) (second res)]
+                                 [nil (first res)]))
+                  handle-enum (fn [t]
+                                [:enum
+                                 (godot-classname->java-classname
+                                  (if (global-enum-set t) (str "GlobalScope." t) t))
+                                 (get java-type->bytes "long")])]
+              (case prefix
+                "typedarray" [:opaque (godot-classname->java-classname "Array") void-pointer-size]
+                "enum" (handle-enum t)
+                "bitfield" (handle-enum t)
+                [:opaque (godot-classname->java-classname t) void-pointer-size])))))
 
 (defn convert-parameter-name [s]
   (str godot-parameter-prefix s))
@@ -124,19 +192,37 @@
   (str/join ", " (map #(format "%s %s" (:type %) (:name %)) args-info)))
 
 (defn method-m->lines [m]
-  (concat
-   [(format "%s(%s) {"
-            (->> ["public"
-                  (if (get m "is_static") "static" nil)
-                  (if (get m "is_virtual") nil "final")
-                  (resolve-arg-type (get-in m ["return_value" "type"]))
-                  (sanitize-method-name (get m "name"))]
-                 (filter (complement nil?))
-                 (str/join " "))
-            (args-info->s (map (fn [arg] {:name (convert-parameter-name (get arg "name"))
-                                          :type (resolve-arg-type (get arg "type"))})
-                               (get m "arguments"))))]
-   ["}"]))
+  (let [[ret-typeclass ret-java-type ret-bytes] (parameter-m->memory-info (get m "return_value"))
+        args-memory-info (map parameter-m->memory-info (get m "arguments"))
+        arg-count (count (get m "arguments"))
+        memory-alloc-string (fn [var-name n]
+                              (if (zero? n)
+                                (format "Memory %s = null;" var-name)
+                                (format "Memory %s = new Memory(%s);" var-name n)))]
+    (block-lines (format "%s(%s)"
+                         (->> ["public"
+                               (when (get m "is_static") "static")
+                               (when-not (get m "is_virtual") "final")
+                               ret-java-type
+                               (sanitize-method-name (get m "name"))]
+                              (filter (complement nil?))
+                              (str/join " "))
+                         (args-info->s (map (fn [[_ java-type _] arg-m]
+                                              {:name (convert-parameter-name (get arg-m "name"))
+                                               :type java-type})
+                                            args-memory-info
+                                            (get m "arguments"))))
+                 (do
+                   (assert (not (nil? ret-bytes)) (str/join ":" [ret-typeclass ret-java-type ret-bytes]))
+                   (concat
+                    [(memory-alloc-string "args" (* void-pointer-size arg-count))
+                     (memory-alloc-string "res" ret-bytes)]
+                    (map-indexed (fn [i [_ _ byte-count]]
+                                   (memory-alloc-string (str "arg" i) byte-count))
+                                 args-memory-info)
+                    (map (fn [i]
+                           (format "args.setPointer(%s, arg%s);" i i))
+                         (range arg-count)))))))
 
 (defn enum-m->lines [m]
   ;; TODO Handle bitfields
@@ -211,7 +297,7 @@
               ""]
              (class-lines classname
                           (if-let [inherits (get m "inherits")]
-                            (resolve-arg-type inherits)
+                            (godot-classname->java-classname inherits)
                             "Object")
                           (-> (concat
                                (map normal-constant-m->line (get m "constants"))
@@ -309,7 +395,7 @@
        (filter #(not (#{"Nil" "bool" "int" "float" "String"}
                       (get % "name"))))
        (map (fn [m]
-              (let [classname (resolve-arg-type (get m "name"))
+              (let [classname (godot-classname->java-classname (get m "name"))
                     filename (str classname ".java")]
                 ;; NOTE: Not the cleanest approach but will do for now
                 (if (= (get m "name") "StringName")
@@ -328,7 +414,7 @@
                                        "Object"
                                        (concat
                                         (flatten (map enum-m->lines (get m "enums")))
-                                        (when (struct-like-classes-set (get m "name"))
+                                        (when (struct-like-classes-set classname)
                                           (make-struct-like-class-lines m))))}))))))
 
 (defn make-global-scope-class-file-export-m []
@@ -383,7 +469,7 @@
                               ""]
                              (map #(format "%s = getGodotFunction(\"%s\");" % %)
                                   preloaded-functions)
-                             (map #(format "%s.initialize(this);" (resolve-arg-type %))
+                             (map #(format "%s.initialize(this);" (godot-classname->java-classname %))
                                   gd-classnames)))
                (block-lines "public Function getGodotFunction(String s)"
                             [(str "return Function.getFunction"
