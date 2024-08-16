@@ -59,7 +59,7 @@
 (defn indent-line [s]
   (str "    " s))
 
-(def dont-use-me-class-name "GDDontUseMe")
+(def dont-use-me-class-name (godot-classname->java-classname "DontUseMe"))
 
 (defn sanitize-method-name [s]
   (case s
@@ -68,10 +68,6 @@
     ;; NOTE: wait is a final method defined in java.lang.Object
     "wait" "gd_wait"
     s))
-
-(def dont-use-me-class-lines
-  ["// This is a dummy class for types that could not be converted (C pointers)"
-   (format "class %s extends Object {}" dont-use-me-class-name)])
 
 (def preamble-lines
   "Lines that should be inserted in the beginning of each file (after package name)."
@@ -104,12 +100,13 @@
    "long" 8})
 
 
+;; NOTE: Initially String was also part of this map but I don't want to handle automatic String
+;; conversion right now, so I omitted String
 (def godot-type-overrides
   {"Nil" "void"
    "bool" "boolean"
    "int" "long"
-   "float" "double"
-   "String" "String"})
+   "float" "double"})
 
 (defn parameter-m->java-type [m]
   (let [type-meta (get m "meta")
@@ -188,12 +185,22 @@
    (map indent-line body-lines)
    ["}"]))
 
+(defn get-native-address-get-set-lines [classname]
+  (concat
+   ["private Pointer nativeAddress;"]
+   (block-lines (str "public " classname "(Pointer p)")
+                ["nativeAddress = p;"])
+   (block-lines "public Pointer getNativeAddress()"
+                ["return nativeAddress;"])))
+
 (defn args-info->s [args-info]
   (str/join ", " (map #(format "%s %s" (:type %) (:name %)) args-info)))
+
 
 (defn method-m->lines [m]
   (let [[ret-typeclass ret-java-type ret-bytes] (parameter-m->memory-info (get m "return_value"))
         args-memory-info (map parameter-m->memory-info (get m "arguments"))
+        args-names (map #(convert-parameter-name (get % "name")) (get m "arguments"))
         arg-count (count (get m "arguments"))
         memory-alloc-string (fn [var-name n]
                               (if (zero? n)
@@ -207,22 +214,39 @@
                                (sanitize-method-name (get m "name"))]
                               (filter (complement nil?))
                               (str/join " "))
-                         (args-info->s (map (fn [[_ java-type _] arg-m]
-                                              {:name (convert-parameter-name (get arg-m "name"))
+                         (args-info->s (map (fn [[_ java-type _] arg-name]
+                                              {:name arg-name
                                                :type java-type})
                                             args-memory-info
-                                            (get m "arguments"))))
+                                            args-names)))
                  (do
                    (assert (not (nil? ret-bytes)) (str/join ":" [ret-typeclass ret-java-type ret-bytes]))
                    (concat
                     [(memory-alloc-string "args" (* void-pointer-size arg-count))
                      (memory-alloc-string "res" ret-bytes)]
-                    (map-indexed (fn [i [_ _ byte-count]]
-                                   (memory-alloc-string (str "arg" i) byte-count))
-                                 args-memory-info)
-                    (map (fn [i]
-                           (format "args.setPointer(%s, arg%s);" i i))
-                         (range arg-count)))))))
+                    (->
+                     (map (fn [i [arg-typeclass arg-java-type byte-count] arg-name]
+                            (let [mem-var-name (str "arg" i)]
+                              [(memory-alloc-string mem-var-name byte-count)
+                               (format "args.setPointer(%s, %s);" i mem-var-name)
+                               (case arg-typeclass
+                                 :primitive (if (= arg-java-type "boolean")
+                                              (format "%s.setByte(0, (byte)(%s ? 1 : 0));"
+                                                      mem-var-name
+                                                      arg-name)
+                                              (format "%s.set%s(0, %s);"
+                                                      mem-var-name
+                                                      (str/capitalize arg-java-type)
+                                                      arg-name))
+                                 :struct-like (format "%s.intoMemory(%s, 0);" arg-name mem-var-name)
+                                 :enum (format "%s.setLong(0, %s.value);" mem-var-name arg-name)
+                                 :opaque (format "%s.setPointer(0, %s);"
+                                                 mem-var-name
+                                                 (str arg-name ".getNativeAddress()")))]))
+                          (range)
+                          args-memory-info
+                          args-names)
+                     flatten))))))
 
 (defn enum-m->lines [m]
   ;; TODO Handle bitfields
@@ -305,6 +329,8 @@
                                ["private static boolean isInitialized = false;"
                                 "private static GodotBridge bridge = null;"
                                 "private Pointer nativeAddress;"]
+                               (block-lines "public Pointer getNativeAddress()"
+                                            ["return nativeAddress;"])
                                ;; NOTE: Internal constructor for turning raw pointers into
                                ;; usable Java instances
                                (block-lines (format "public %s(Pointer p)" classname)
@@ -392,30 +418,21 @@
 
 (defn make-builtin-class-file-export-ms []
   (->> (get api "builtin_classes")
-       (filter #(not (#{"Nil" "bool" "int" "float" "String"}
+       (filter #(not ((set (keys godot-type-overrides))
                       (get % "name"))))
        (map (fn [m]
               (let [classname (godot-classname->java-classname (get m "name"))
                     filename (str classname ".java")]
-                ;; NOTE: Not the cleanest approach but will do for now
-                (if (= (get m "name") "StringName")
-                  {:filename filename
-                   :lines (class-lines classname
-                                       "Object"
-                                       (concat
-                                        (map enum-m->lines (get m "enums"))
-                                        ["private Pointer nativeAddress;"]
-                                        (block-lines (str "public " classname "(Pointer p)")
-                                                     ["nativeAddress = p;"])
-                                        (block-lines "public Pointer getNativeAddress()"
-                                                     ["return nativeAddress;"])))}
-                  {:filename filename
-                   :lines (class-lines classname
-                                       "Object"
-                                       (concat
-                                        (flatten (map enum-m->lines (get m "enums")))
-                                        (when (struct-like-classes-set classname)
-                                          (make-struct-like-class-lines m))))}))))))
+                {:filename filename
+                 :lines (class-lines
+                         classname
+                         "Object"
+                         (flatten
+                          (concat
+                           (map enum-m->lines (get m "enums"))
+                           (if (struct-like-classes-set classname)
+                             (make-struct-like-class-lines m)
+                             (get-native-address-get-set-lines classname)))))})))))
 
 (defn make-global-scope-class-file-export-m []
   (let [classname (godot-classname->java-classname "GlobalScope")]
@@ -433,10 +450,12 @@
      :lines (class-lines classname
                          "Object"
                          (flatten
-                          (->> (get api "global_enums")
-                               (filter variant-global-enum?)
-                               (map #(update % "name" (fn [s] (subs s (count "Variant.")))))
-                               (map enum-m->lines))))}))
+                          (concat
+                           (->> (get api "global_enums")
+                                (filter variant-global-enum?)
+                                (map #(update % "name" (fn [s] (subs s (count "Variant.")))))
+                                (map enum-m->lines))
+                           (get-native-address-get-set-lines classname))))}))
 
 (defn make-godot-bridge-class-file-export-m [gd-classnames]
   (let [classname "GodotBridge"
@@ -491,6 +510,14 @@
                             (invoke-pointer-lines "return classdb_construct_object"
                                                   ["string_name"])))))}))
 
+(defn make-dont-use-me-class-file-export-m []
+  (let [classname dont-use-me-class-name]
+    {:filename (str classname ".java")
+     :lines (concat
+             ["// This is a dummy class for types that could not be converted (C pointers)"]
+             (class-lines classname "Object"
+                          (get-native-address-get-set-lines classname)))}))
+
 (defn generate-and-save-java-classes []
   (.mkdirs godot-wrapper-class-output-dir)
   (let [{:keys [filename lines]}
@@ -502,8 +529,7 @@
                           lines))))
   (doseq [{:keys [filename lines]}
           (concat
-           [{:filename (str dont-use-me-class-name ".java")
-             :lines (class-lines dont-use-me-class-name "Object" [])}
+           [(make-dont-use-me-class-file-export-m)
             (make-variant-class-file-export-m)
             (make-global-scope-class-file-export-m)]
            (map normal-class-m->build-file-export-m (get api "classes"))
