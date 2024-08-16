@@ -47,6 +47,13 @@
     (map godot-classname->java-classname it)
     (set it)))
 
+(def singleton-set
+  (->> (get api "singletons")
+       ;; NOTE: Name always matches the type, so we just take that info
+       (map #(get % "type"))
+       (map godot-classname->java-classname)
+       set))
+
 (def size-mappings
   (as-> api it
     (get it "builtin_class_sizes")
@@ -337,7 +344,8 @@
 (defn normal-class-m->build-file-export-m [m]
   (let [classname (godot-classname->java-classname (get m "name"))
         ;; NOTE: Virtual methods don't have hashes and thus cannot be called by users
-        methods (filter #(not (get % "is_virtual")) (get m "methods"))]
+        methods (filter #(not (get % "is_virtual")) (get m "methods"))
+        singleton? (singleton-set classname)]
     {:filename (str classname ".java")
      :lines (concat
              ["import godot_java.GodotBridge;"
@@ -352,6 +360,11 @@
                                ["private static boolean isInitialized = false;"
                                 "private static GodotBridge bridge = null;"
                                 "private Pointer nativeAddress;"]
+                               (when singleton?
+                                 (concat
+                                  [(format "private static %s singletonInstance = null;" classname)]
+                                  (block-lines (format "public %s getInstance()" classname)
+                                               ["return singletonInstance;"])))
                                (block-lines "public Pointer getNativeAddress()"
                                             ["return nativeAddress;"])
                                ;; NOTE: Internal constructor for turning raw pointers into
@@ -375,6 +388,13 @@
                                              [(format "%s = bridge.stringNameFromString(\"%s\");"
                                                       self-class-string-name-cache-field-name
                                                       (get m "name"))]
+                                             (when singleton?
+                                               [(format
+                                                 "Pointer singletonAddress = bridge.loadSingleton(%s);"
+                                                 self-class-string-name-cache-field-name)
+                                                (format
+                                                 "singletonInstance = new %s(singletonAddress);"
+                                                 classname)])
                                              (map #(format "%s = bridge.stringNameFromString(\"%s\");"
                                                            (string-name-cache-field-name (get % "name"))
                                                            (get % "name"))
@@ -486,7 +506,8 @@
                              "classdb_get_method_bind"
                              "string_name_new_with_utf8_chars"
                              "object_method_bind_ptrcall"
-                             "classdb_construct_object"]
+                             "classdb_construct_object"
+                             "global_get_singleton"]
         invoke-pointer-lines (fn [method args]
                                (concat
                                 [(str method ".invokePointer(new Object[]{")]
@@ -541,7 +562,11 @@
                                                   ["methodBind"
                                                    "nativeAddress"
                                                    "args.getPointer(0)"
-                                                   "res.getPointer(0)"])))))}))
+                                                   "res.getPointer(0)"]))
+               (block-lines (format "public Pointer loadSingleton(%s name)"
+                                    string-name-java-classname)
+                            (invoke-pointer-lines "return global_get_singleton"
+                                                  ["name.getNativeAddress()"])))))}))
 
 (defn make-dont-use-me-class-file-export-m []
   (let [classname dont-use-me-class-name]
