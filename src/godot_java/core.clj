@@ -228,7 +228,8 @@
                      (map (fn [i [arg-typeclass arg-java-type byte-count] arg-name]
                             (let [mem-var-name (str "arg" i)]
                               [(memory-alloc-string mem-var-name byte-count)
-                               (format "args.setPointer(%s, %s);" i mem-var-name)
+                               (format "args.setPointer(%s, %s);"
+                                       (* i void-pointer-size) mem-var-name)
                                (case arg-typeclass
                                  :primitive (if (= arg-java-type "boolean")
                                               (format "%s.setByte(0, (byte)(%s ? 1 : 0));"
