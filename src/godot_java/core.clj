@@ -264,7 +264,10 @@
                           args-memory-info
                           args-names)
                      flatten)
-                    [(format "bridge.pointerCall(%s, nativeAddress, args, res);" method-bind)]
+                    [(format "bridge.pointerCall(%s, %s, args, res);"
+                             method-bind
+                             ;; NOTE: Static methods shouldn't care about the instance we pass
+                             (if (get m "is_static") "null" "nativeAddress"))]
                     (case ret-typeclass
                       :void []
                       [(str ret-java-type
