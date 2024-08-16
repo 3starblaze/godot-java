@@ -134,6 +134,7 @@
   "Return a tuple of [typeclass java-type byte-count] for given parameter map.
 
   typeclass is either:
+  - :void -- void
   - :primitive -- basic numeric type
   - :opaque -- an object instance (void pointer)
   - :enum -- Java class, Godot int64
@@ -263,10 +264,22 @@
                           args-memory-info
                           args-names)
                      flatten)
-                    [(format "bridge.pointerCall(%s, nativeAddress, args, res)" method-bind)]
-                    (map (fn [i] (str (i->arg-mem-var i) ".free();")) (range arg-count))
-                    (when-not (zero? arg-count) ["args.free();"])
-                    (when-not (zero? ret-bytes) ["res.free();"]))))))
+                    [(format "bridge.pointerCall(%s, nativeAddress, args, res);" method-bind)]
+                    (case ret-typeclass
+                      :void []
+                      [(str ret-java-type
+                            " javaResult = "
+                            (case ret-typeclass
+                              :primitive (if (= ret-java-type "boolean")
+                                           "res.getByte(0) != 0;"
+                                           (format "res.get%s(0);" (str/capitalize ret-java-type)))
+                              :opaque (format "new %s(res.getPointer(0));" ret-java-type)
+                              :enum (format "%s.fromValue(res.getLong(0));" ret-java-type)
+                              :struct-like (format "new %s(res, 0);" ret-java-type)))])
+                    (map (fn [i] (str (i->arg-mem-var i) ".close();")) (range arg-count))
+                    (when-not (zero? arg-count) ["args.close();"])
+                    (when-not (zero? ret-bytes) ["res.close();"])
+                    (when-not (zero? ret-bytes) ["return javaResult;"]))))))
 
 (defn enum-m->lines [m]
   ;; TODO Handle bitfields
@@ -301,7 +314,8 @@
                                [(format "%s res = reverseMapping.get(v);" (get m "name"))]
                                (block-lines "if (res == null)"
                                             [(format "throw new IllegalArgumentException(\"%s\");"
-                                                     "Value could not be converted to an enum!")])))))))
+                                                     "Value could not be converted to an enum!")])
+                               ["return res;"]))))))
 
 (defn normal-class-m->cache-field-lines [m]
   (concat
