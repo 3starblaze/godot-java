@@ -196,6 +196,19 @@
 (defn args-info->s [args-info]
   (str/join ", " (map #(format "%s %s" (:type %) (:name %)) args-info)))
 
+(defn normal-constant-m->line [m]
+  (format "public final static long %s = %s;" (get m "name") (get m "value")))
+
+(defn string-name-cache-field-name [s]
+  (str "stringNameCache" s))
+
+(defn method-bind-cache-field-name [s]
+  (str "methodBindCache" s))
+
+(defn normal-class-m->string-names-to-cache [m]
+  (map #(vector (get % "name") (get % "hash")) (get m "methods")))
+
+(def self-class-string-name-cache-field-name "selfClassStringName")
 
 (defn method-m->lines [m]
   (let [[ret-typeclass ret-java-type ret-bytes] (parameter-m->memory-info (get m "return_value"))
@@ -205,7 +218,8 @@
         memory-alloc-string (fn [var-name n]
                               (if (zero? n)
                                 (format "Memory %s = null;" var-name)
-                                (format "Memory %s = new Memory(%s);" var-name n)))]
+                                (format "Memory %s = new Memory(%s);" var-name n)))
+        method-bind (method-bind-cache-field-name (get m "name"))]
     (block-lines (format "%s(%s)"
                          (->> ["public"
                                (when (get m "is_static") "static")
@@ -247,7 +261,8 @@
                           (range)
                           args-memory-info
                           args-names)
-                     flatten))))))
+                     flatten)
+                    [(format "bridge.pointerCall(%s, nativeAddress, args, res)" method-bind)])))))
 
 (defn enum-m->lines [m]
   ;; TODO Handle bitfields
@@ -283,20 +298,6 @@
                                (block-lines "if (res == null)"
                                             [(format "throw new IllegalArgumentException(\"%s\");"
                                                      "Value could not be converted to an enum!")])))))))
-
-(defn normal-constant-m->line [m]
-  (format "public final static long %s = %s;" (get m "name") (get m "value")))
-
-(defn string-name-cache-field-name [s]
-  (str "stringNameCache" s))
-
-(defn method-bind-cache-field-name [s]
-  (str "methodBindCache" s))
-
-(defn normal-class-m->string-names-to-cache [m]
-  (map #(vector (get % "name") (get % "hash")) (get m "methods")))
-
-(def self-class-string-name-cache-field-name "selfClassStringName")
 
 (defn normal-class-m->cache-field-lines [m]
   (concat
@@ -509,7 +510,17 @@
                (block-lines (format "public Pointer getNewInstancePointer(%s string_name)"
                                     string-name-java-classname)
                             (invoke-pointer-lines "return classdb_construct_object"
-                                                  ["string_name"])))))}))
+                                                  ["string_name"]))
+               (block-lines (format "public void pointerCall(%s)"
+                                    (str/join ", " ["Pointer methodBind"
+                                                    "Pointer nativeAddress"
+                                                    "Memory args"
+                                                    "Memory res"]))
+                            (invoke-pointer-lines "object_method_bind_ptrcall"
+                                                  ["methodBind"
+                                                   "nativeAddress"
+                                                   "args.getPointer(0)"
+                                                   "res.getPointer(0)"])))))}))
 
 (defn make-dont-use-me-class-file-export-m []
   (let [classname dont-use-me-class-name]
