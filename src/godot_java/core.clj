@@ -302,15 +302,31 @@
 (defn apply-hooks [classmap hooks]
   (apply-hook-on-hookmap {:classmap classmap} hooks))
 
+(defn memory-alloc-string [var-name n]
+  (if (zero? n)
+    (format "Memory %s = null;" var-name)
+    (format "Memory %s = new Memory(%s);" var-name n)))
+
+(defn get-primitive-memory-getter-line [java-type]
+  (if (= java-type "boolean")
+    "res.getByte(0) != 0;"
+    (format "res.get%s(0);" (str/capitalize java-type))))
+
+(defn get-primitive-memory-setter-line [mem-var-name java-type arg-name]
+  (if (= java-type "boolean")
+    (format "%s.setByte(0, (byte)(%s ? 1 : 0));"
+            mem-var-name
+            arg-name)
+    (format "%s.set%s(0, %s);"
+            mem-var-name
+            (str/capitalize java-type)
+            arg-name)))
+
 (defn method-m->classmap-method [m]
   (let [[ret-typeclass ret-java-type ret-bytes] (parameter-m->memory-info (get m "return_value"))
         args-memory-info (map parameter-m->memory-info (get m "arguments"))
         args-names (map #(convert-parameter-name (get % "name")) (get m "arguments"))
         arg-count (count (get m "arguments"))
-        memory-alloc-string (fn [var-name n]
-                              (if (zero? n)
-                                (format "Memory %s = null;" var-name)
-                                (format "Memory %s = new Memory(%s);" var-name n)))
         method-bind (method-bind-cache-field-name (get m "name"))
         i->arg-mem-var #(str "arg" %)]
     {:name (sanitize-method-name (get m "name"))
@@ -328,22 +344,17 @@
               (map (fn [i [arg-typeclass arg-java-type byte-count] arg-name]
                      (let [mem-var-name (i->arg-mem-var i)]
                        [(memory-alloc-string mem-var-name byte-count)
-                        (format "args.setPointer(%s, %s);"
-                                (* i void-pointer-size) mem-var-name)
+                        (format "args.setPointer(%s, %s);" (* i void-pointer-size) mem-var-name)
                         (case arg-typeclass
-                          :primitive (if (= arg-java-type "boolean")
-                                       (format "%s.setByte(0, (byte)(%s ? 1 : 0));"
-                                               mem-var-name
-                                               arg-name)
-                                       (format "%s.set%s(0, %s);"
-                                               mem-var-name
-                                               (str/capitalize arg-java-type)
-                                               arg-name))
+                          :primitive (get-primitive-memory-setter-line mem-var-name arg-java-type arg-name)
                           :struct-like (format "%s.intoMemory(%s, 0);" arg-name mem-var-name)
-                          :enum (format "%s.setLong(0, %s.value);" mem-var-name arg-name)
-                          :opaque (format "%s.setPointer(0, %s);"
+                          :enum (get-primitive-memory-setter-line
+                                 mem-var-name
+                                 "long"
+                                 (str arg-name ".value"))
+                          :opaque (format "%s.setPointer(0, %s.getNativeAddress());"
                                           mem-var-name
-                                          (str arg-name ".getNativeAddress()")))]))
+                                          arg-name))]))
                    (range)
                    args-memory-info
                    args-names)
@@ -357,9 +368,7 @@
                [(str ret-java-type
                      " javaResult = "
                      (case ret-typeclass
-                       :primitive (if (= ret-java-type "boolean")
-                                    "res.getByte(0) != 0;"
-                                    (format "res.get%s(0);" (str/capitalize ret-java-type)))
+                       :primitive (get-primitive-memory-getter-line ret-java-type)
                        :opaque (format "new %s(res.getPointer(0));" ret-java-type)
                        :enum (format "%s.fromValue(res.getLong(0));" ret-java-type)
                        :struct-like (format "new %s(res, 0);" ret-java-type)))])
@@ -485,7 +494,7 @@
                   :modifiers #{"public" "static"}
                   :name "intoMemory"
                   :args []
-                  :lines [(format "Memory m = new Memory(%s);" (get size-mappings (get m "name")))
+                  :lines [(memory-alloc-string "m" (get size-mappings (get m "name")))
                           "intoMemory(m, 0);"
                           "return m;"]}])))))))
 
@@ -539,7 +548,7 @@
                      :name "stringNameFromString"
                      :args [{:type "String" :name "s"}]
                      :lines (concat
-                             [(format "Memory mem = new Memory(%s);" (get size-mappings "StringName"))]
+                             [(memory-alloc-string "mem" (get size-mappings "StringName"))]
                              (invoke-pointer-lines "string_name_new_with_utf8_chars" ["mem" "s"])
                              [(format "return new %s(mem);" string-name-java-classname)])}
                     {:return-type "Pointer"
