@@ -1,0 +1,12 @@
+{
+ :tasks
+ {
+  make-macos
+  {:doc "Set some VARS  and call make"
+   :task 
+   (shell
+    {:extra-env {;; Disable this var
+                 "LINUX_OPTS" ""}}
+    "make")}
+ }
+ }
