@@ -559,6 +559,7 @@
         preloaded-functions ["object_method_bind_call"
                              "classdb_get_method_bind"
                              "string_name_new_with_utf8_chars"
+                             "string_new_with_utf8_chars"
                              "object_method_bind_ptrcall"
                              "classdb_construct_object"
                              "global_get_singleton"]
@@ -586,14 +587,24 @@
                      :args [{:type "String" :name "s"}]
                      :lines [(str "return Function.getFunction"
                                   "(pGetProcAddress.invokePointer(new Object[]{ s }));")]}
-
-                    {:return-type string-name-java-classname
-                     :name "stringNameFromString"
-                     :args [{:type "String" :name "s"}]
-                     :lines (concat
-                             [(alloc-bytes-line "mem" (get size-mappings "StringName"))]
-                             (invoke-pointer-lines "string_name_new_with_utf8_chars" ["mem" "s"])
-                             [(format "return new %s(mem);" string-name-java-classname)])}
+                    (let [godot-c "StringName"
+                          java-c (godot-classname->java-classname godot-c)]
+                      {:return-type java-c
+                       :name "stringNameFromString"
+                       :args [{:type "String" :name "s"}]
+                       :lines (concat
+                               [(alloc-bytes-line "mem" (get size-mappings godot-c))]
+                               (invoke-pointer-lines "string_name_new_with_utf8_chars" ["mem" "s"])
+                               [(format "return new %s(mem);" java-c)])})
+                    (let [godot-c "String"
+                          java-c (godot-classname->java-classname godot-c)]
+                      {:return-type java-c
+                       :name "godotStringFromString"
+                       :args [{:type "String" :name "s"}]
+                       :lines (concat
+                               [(alloc-bytes-line "mem" (get size-mappings godot-c))]
+                               (invoke-pointer-lines "string_new_with_utf8_chars" ["mem" "s"])
+                               [(format "return new %s(mem);" java-c)])})
                     {:return-type "Pointer"
                      :name "getMethodBind"
                      :args [{:type string-name-java-classname :name "classname"}
