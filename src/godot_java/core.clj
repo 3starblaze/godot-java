@@ -113,7 +113,7 @@
    "float" "double"})
 
 (defn parameter-m->memory-info
-  "Return a tuple of [typeclass java-type byte-count] for given parameter map.
+  "Return a map of {:keys [typeclass java-type n-bytes]} for given parameter map.
 
   typeclass is either:
   - :void -- void
@@ -121,38 +121,44 @@
   - :opaque -- an object instance (void pointer)
   - :enum -- Java class, Godot int64
   - :struct-like -- Java class, Godot struct"
-  [m]
-  (let [type-meta (get m "meta")
-        type-type (get m "type")
-        overriden-type (get godot-type-overrides type-type)
-        fetched-size (get size-mappings type-type)]
+  [{:strs [meta type] :as m}]
+  (let [overriden-type (get godot-type-overrides type)
+        fetched-size (get size-mappings type)
+        wrap-res (fn [a b c] {:typeclass a :java-type b :n-bytes c})
+        wrap-enum (fn [t] (wrap-res :enum
+                                    (godot-classname->java-classname
+                                     (if (global-enum-set t) (str "GlobalScope." t) t))
+                                    (get java-type->bytes "long")))
+        wrap-opaque (fn [b c] (wrap-res :opaque b c))
+        wrap-opaque-auto (fn [t] (wrap-opaque (godot-classname->java-classname t) void-pointer-size))
+        [prefix t] (let [res (str/split (or type "") #"::" 2)]
+                     (if (= (count res) 2)
+                       [(first res) (second res)]
+                       [nil (first res)]))]
     (cond
-      (nil? m) [:void "void" 0]
-      type-meta (let [t (get meta-type->java-type type-meta)]
-                  [:primitive t (get java-type->bytes t)])
-      overriden-type (if (= overriden-type "String")
-                       [:opaque "String" void-pointer-size]
-                       [:primitive overriden-type (get java-type->bytes overriden-type)])
-      fetched-size (let [t (godot-classname->java-classname type-type)]
+      (empty? m) (wrap-res :void "void" 0)
+      meta (if-let [t (get meta-type->java-type meta)]
+             (wrap-res :primitive t (get java-type->bytes t))
+             ;; NOTE: If we can't find in the map, we just resolve it as a regular type. This
+             ;; is handy for processing struct-like class member info.
+             (parameter-m->memory-info {"type" meta}))
+      overriden-type (wrap-res :primitive overriden-type (get java-type->bytes overriden-type))
+      fetched-size (let [t (godot-classname->java-classname type)]
                      (if (struct-like-classes-set t)
-                       [:struct-like t fetched-size]
-                       [:opaque t fetched-size]))
+                       (wrap-res :struct-like t fetched-size)
+                       (wrap-opaque t fetched-size)))
       ;; NOTE: It's a C pointer, not handling that
-      (str/includes? type-type "*") [:opaque dont-use-me-class-name void-pointer-size]
-      :else (let [[prefix t] (let [res (str/split (get m "type") #"::" 2)]
-                               (if (= (count res) 2)
-                                 [(first res) (second res)]
-                                 [nil (first res)]))
-                  handle-enum (fn [t]
-                                [:enum
-                                 (godot-classname->java-classname
-                                  (if (global-enum-set t) (str "GlobalScope." t) t))
-                                 (get java-type->bytes "long")])]
-              (case prefix
-                "typedarray" [:opaque (godot-classname->java-classname "Array") void-pointer-size]
-                "enum" (handle-enum t)
-                "bitfield" (handle-enum t)
-                [:opaque (godot-classname->java-classname t) void-pointer-size])))))
+      (str/includes? type "*") (wrap-opaque dont-use-me-class-name void-pointer-size)
+      (= prefix "typedarray") (wrap-opaque-auto "Array")
+      (= prefix "enum") (wrap-enum t)
+      (= prefix "bitfield") (wrap-enum t)
+      :else (wrap-opaque-auto t))))
+
+(defn get-memory-var-map [memory-var native-var offset-expression type-m]
+  (merge {:memory-var memory-var
+          :native-var native-var
+          :offset-expression offset-expression}
+         (parameter-m->memory-info type-m)))
 
 ;; NOTE: Some parameters have reserved words as names (e.g. interface, char) and thus I decided
 ;; that it is easier to prefix all parameters to avoid the problem.
@@ -163,9 +169,6 @@
   (concat [(format "%s {" header)]
           (map indent-line lines)
           ["}"]))
-
-(defn args-info->s [args-info]
-  (str/join ", " (map #(format "%s %s" (:type %) (:name %)) args-info)))
 
 (defn string-name-cache-field-name [s]
   (str "stringNameCache" s))
@@ -200,6 +203,7 @@
                                           :name "getNativeAddress"
                                           :args []
                                           :lines ["return nativeAddress;"]}])))))
+
 (defn native-address-child-hook [hookmap]
   (update-in hookmap [:classmap :constructors] concat [(native-address-constructor-with-lines
                                                         ["super(p);"])]))
@@ -278,94 +282,129 @@
 (defn apply-hooks [classmap hooks]
   (apply-hook-on-hookmap {:classmap classmap} hooks))
 
-(defn memory-alloc-string [var-name n]
-  (if (zero? n)
-    (format "Memory %s = null;" var-name)
-    (format "Memory %s = new Memory(%s);" var-name n)))
+(defn alloc-bytes-line [memory-var n-bytes]
+  (if (zero? n-bytes)
+    (format "Memory %s = null;" memory-var)
+    (format "Memory %s = new Memory(%s);" memory-var n-bytes)))
 
-(defn get-primitive-memory-getter-line [java-type]
+(defn prepend-assignment-left-hand-side [{:keys [java-type native-var]} s]
+  (format "%s %s = %s" java-type native-var s))
+
+(defmulti get-memory-alloc-line :typeclass)
+(defmethod get-memory-alloc-line :default [{:keys [memory-var n-bytes]}]
+  (alloc-bytes-line memory-var n-bytes))
+
+(defmulti get-memory-dealloc-line :typeclass)
+(defmethod get-memory-dealloc-line :void [_]
+  "")
+(defmethod get-memory-dealloc-line :default [{:keys [memory-var]}]
+  (str memory-var ".close();"))
+
+
+(defmulti get-memory-getter-expression :typeclass)
+
+(defmethod get-memory-getter-expression :void
+  [_]
+  "")
+
+(defmethod get-memory-getter-expression :primitive
+  [{:keys [java-type memory-var offset-expression]}]
   (if (= java-type "boolean")
-    "res.getByte(0) != 0;"
-    (format "res.get%s(0);" (str/capitalize java-type))))
+    (format "(%s.getByte(%s) != 0)" memory-var offset-expression)
+    (format "(%s.get%s(%s))" memory-var (str/capitalize java-type) offset-expression)))
 
-(defn get-primitive-memory-setter-line [mem-var-name java-type arg-name]
+(defmethod get-memory-getter-expression :opaque
+  [{:keys [java-type memory-var offset-expression]}]
+  (format "(new %s(%s.getPointer(%s)))" java-type memory-var offset-expression))
+
+(defmethod get-memory-getter-expression :enum
+  [{:keys [java-type memory-var offset-expression]}]
+  (format "(%s.fromValue(%s.getLong(%s)))" java-type memory-var offset-expression))
+
+(defmethod get-memory-getter-expression :struct-like
+  [{:keys [java-type memory-var offset-expression]}]
+  (format "(new %s(%s, %s))" java-type memory-var offset-expression))
+
+(defn get-memory-getter-line [{:keys [typeclass java-type native-var] :as m}]
+  (if (= typeclass :void)
+    ";"
+    (format "%s %s = %s;" java-type native-var (get-memory-getter-expression m))))
+
+(defmulti get-memory-setter-line :typeclass)
+
+(defmethod get-memory-setter-line :void [_]
+  ";")
+
+(defmethod get-memory-setter-line :primitive
+  [{:keys [memory-var java-type native-var offset-expression]}]
   (if (= java-type "boolean")
-    (format "%s.setByte(0, (byte)(%s ? 1 : 0));"
-            mem-var-name
-            arg-name)
-    (format "%s.set%s(0, %s);"
-            mem-var-name
-            (str/capitalize java-type)
-            arg-name)))
+    (format "%s.setByte(%s, (byte)(%s ? 1 : 0));" memory-var offset-expression native-var)
+    (format "%s.set%s(%s, %s);" memory-var (str/capitalize java-type) offset-expression native-var)))
 
-(defn get-result-retrieve-memory-lines [mem-var-name res-var-name parameter-m]
-  (let [[ret-typeclass ret-java-type ret-bytes]
-        (parameter-m->memory-info (get parameter-m "return_value"))]
-    (merge
-     {:java-type ret-java-type
-      :init [(memory-alloc-string mem-var-name ret-bytes)]}
-     (when-not (zero? ret-bytes)
-       {:retrieve [(format "%s %s = %s;"
-                           ret-java-type
-                           res-var-name
-                           (case ret-typeclass
-                             :primitive (get-primitive-memory-getter-line ret-java-type)
-                             :opaque (format "new %s(res.getPointer(0));" ret-java-type)
-                             :enum (format "%s.fromValue(res.getLong(0));" ret-java-type)
-                             :struct-like (format "new %s(res, 0);" ret-java-type)))]
-        :deinit [(str mem-var-name ".close();")]
-        :return [(format "return %;" res-var-name)]}))))
+(defmethod get-memory-setter-line :struct-like
+  [{:keys [native-var memory-var offset-expression]}]
+  (format "%s.intoMemory(%s, %s);" native-var memory-var offset-expression))
 
-(defn get-args-memory-lines [args-var-name i->arg-mem-var args]
-  (let [args-memory-info (map parameter-m->memory-info args)
-        args-names (map #(convert-parameter-name (get % "name")) args)
-        args-count (count args)]
-    {:init [(memory-alloc-string args-var-name (* void-pointer-size args-count))]
-     :store (flatten
-             (map
-              (fn [i [arg-typeclass arg-java-type byte-count] arg-name]
-                (let [mem-var-name (i->arg-mem-var i)]
-                  [(memory-alloc-string mem-var-name byte-count)
-                   (format "%s.setPointer(%s, %s);" args-var-name (* i void-pointer-size) mem-var-name)
-                   (case arg-typeclass
-                     :primitive (get-primitive-memory-setter-line mem-var-name arg-java-type arg-name)
-                     :struct-like (format "%s.intoMemory(%s, 0);" arg-name mem-var-name)
-                     :enum (get-primitive-memory-setter-line
-                            mem-var-name
-                            "long"
-                            (str arg-name ".value"))
-                     :opaque (format "%s.setPointer(0, %s.getNativeAddress());"
-                                     mem-var-name
-                                     arg-name))]))
-              (range)
-              args-memory-info
-              args-names))
-     :deinit (concat
-              (->> (range args-count) (map i->arg-mem-var) (map #(str % ".close();")))
-              (when-not (zero? args-count) ["args.close();"]))}))
+(defmethod get-memory-setter-line :enum
+  [{:keys [native-var memory-var offset-expression]}]
+  (format "%s.setLong(%s, %s.value);" memory-var offset-expression native-var))
 
-(defn method-m->classmap-method [{:strs [name arguments is_static is_virtual]}]
-  (let [args-memory (get-args-memory-lines "args" #(str "arg" %) arguments)
-        result-memory (get-result-retrieve-memory-lines "resMem" "resValue" arguments)]
+(defmethod get-memory-setter-line :opaque
+  [{:keys [native-var memory-var offset-expression]}]
+  (format "%s.setPointer(%s, %s.getNativeAddress());" memory-var offset-expression native-var))
+
+(defmulti get-return-lines :typeclass)
+(defmethod get-return-lines :void [_]
+  [])
+(defmethod get-return-lines :default [{:keys [native-var]}]
+  [(format "return %s;" native-var)])
+
+(defn get-args-lines [memory-var arg-var-maps]
+  {:init (concat
+          [(alloc-bytes-line memory-var (* void-pointer-size (count arg-var-maps)))]
+          (map-indexed (fn [i m]
+                         (format "%s.setPointer(%s, %s);"
+                                 memory-var
+                                 (* void-pointer-size i)
+                                 (:memory-var m)))
+                       arg-var-maps))
+   :deinit (when-not (empty? arg-var-maps) [(str memory-var ".close();")])})
+
+(defn method-m->classmap-method
+  [{:strs [name arguments is_static is_virtual return_value]}]
+  (let [arg-memory-var-maps (map-indexed
+                             (fn [i arg]
+                               (get-memory-var-map
+                                (str "argMem" i)
+                                (convert-parameter-name (get arg "name"))
+                                "0"
+                                arg))
+                             arguments)
+        res-mem-var "resMem"
+        args-mem-var "argsMem"
+        args-lines (get-args-lines args-mem-var arg-memory-var-maps)
+        result-memory-var-map (get-memory-var-map res-mem-var "resValue" "0" return_value)]
     {:name (sanitize-method-name name)
-     :return-type (:java-type result-memory)
+     :return-type (:java-type result-memory-var-map)
      :modifiers #{"public" (when is_static "static") (when-not is_virtual "final")}
-     :args (map (fn [arg-m]
-                  {:name (convert-parameter-name (get arg-m "name"))
-                   :type (second (parameter-m->memory-info arg-m))})
-                arguments)
+     :args (map (fn [{:keys [native-var java-type]}] {:name native-var :type java-type})
+                arg-memory-var-maps)
      :lines (concat
-             (:init result-memory)
-             (:init args-memory)
-             (:store args-memory)
-             [(format "bridge.pointerCall(%s, %s, args, resMem);"
+             (map get-memory-alloc-line arg-memory-var-maps)
+             (:init args-lines)
+             (map get-memory-setter-line arg-memory-var-maps)
+             [(get-memory-alloc-line result-memory-var-map)
+              (format "bridge.pointerCall(%s, %s, %s, %s);"
                       (method-bind-cache-field-name name)
                       ;; NOTE: Static methods shouldn't care about the instance we pass
-                      (if is_static "null" "getNativeAddress()"))]
-             (:retrieve result-memory)
-             (:deinit result-memory)
-             (:deinit args-memory)
-             (:return result-memory))}))
+                      (if is_static "null" "getNativeAddress()")
+                      args-mem-var
+                      res-mem-var)]
+             (:deinit args-lines)
+             [(get-memory-getter-line result-memory-var-map)
+              (get-memory-dealloc-line result-memory-var-map)]
+             (map get-memory-dealloc-line arg-memory-var-maps)
+             (get-return-lines result-memory-var-map))}))
 
 (defn enum-m->lines [m]
   ;; TODO Handle bitfields
@@ -435,58 +474,38 @@
                   (filter #(= (get % "name") (get m "name")) it)
                   (first it)
                   (get it "members"))
-        members-info (map (fn [member]
-                            (let [m-meta (get member "meta")
-                                  m-name (get member "member")
-                                  offset (get member "offset")
-
-                                  [primitive? typename]
-                                  (if-let [t (get meta-type->java-type m-meta)]
-                                    [true t]
-                                    [false (godot-classname->java-classname m-meta)])]
-                              {:member-map {:modifiers #{"public"} :type typename :name m-name}
-                               :init-string (str m-name " = "
-                                                 (format (if primitive?
-                                                           "m.get%s(offset + %s);"
-                                                           "new %s(m, %s);")
-                                                         (if primitive?
-                                                           (str/capitalize typename)
-                                                           typename)
-                                                         offset))
-                               :memory-set-string (format (if primitive?
-                                                            (format "m.set%s(offset + %s, %s);"
-                                                                    (str/capitalize typename)
-                                                                    offset
-                                                                    m-name)
-                                                            (format "%s.intoMemory(m, %s);"
-                                                                    m-name
-                                                                    offset)))}))
-                          members)]
+        m-arg {:type "Memory" :name "m"}
+        offset-arg {:type "long" :name "offset"}
+        member-var-maps (map #(get-memory-var-map
+                               (:name m-arg)
+                               (get % "member")
+                               (str (:name offset-arg) " + " (get % "offset"))
+                               %)
+                             members)]
     (fn [hookmap]
       (update hookmap :classmap
               (fn [classmap]
                 (-> classmap
-                    (update :fields concat
-                            (map :member-map members-info))
+                    (update :fields concat (map (fn [{:keys [java-type native-var]}]
+                                                  {:modifiers #{"public"}
+                                                   :type java-type
+                                                   :name native-var}) member-var-maps))
                     (update :constructors concat
                             [{:modifiers #{"public"}
-                              :args [{:type "Memory" :name "m"}
-                                     {:type "long"   :name "offset"}]
-                              :lines (map :init-string members-info)}])
+                              :args [m-arg offset-arg]
+                              ;; NOTE: Since we need to set an instance field,
+                              ;; get-memory-getter-expression is used instead of
+                              ;; get-memory-getter-line
+                              :lines (map #(format "this.%s = %s;"
+                                                   (:native-var %)
+                                                   (get-memory-getter-expression %))
+                                          member-var-maps)}])
                     (update :methods concat
                             [{:return-type "void"
-                  :name "intoMemory"
-                  :modifiers #{"public" "static"}
-                  :args [{:type "Memory" :name "m"}
-                         {:type "long"   :name "offset"}]
-                  :lines (map :memory-set-string members-info)}
-                 {:return-type "Memory"
-                  :modifiers #{"public" "static"}
-                  :name "intoMemory"
-                  :args []
-                  :lines [(memory-alloc-string "m" (get size-mappings (get m "name")))
-                          "intoMemory(m, 0);"
-                          "return m;"]}])))))))
+                              :name "intoMemory"
+                              :modifiers #{"public"}
+                              :args [m-arg offset-arg]
+                              :lines (map get-memory-setter-line member-var-maps)}])))))))
 
 (defn make-builtin-class-classmaps []
   (->> (get api "builtin_classes")
@@ -495,7 +514,7 @@
               (let [classname (godot-classname->java-classname (get m "name"))]
                 (apply-hooks {:classname classname
                               :class-preamble-lines (flatten (map enum-m->lines (get m "enums")))}
-                             (if (struct-like-classes-set)
+                             (if (struct-like-classes-set classname)
                                [(make-struct-like-class-hook m)]
                                [native-address-hook])))))))
 
@@ -538,7 +557,7 @@
                      :name "stringNameFromString"
                      :args [{:type "String" :name "s"}]
                      :lines (concat
-                             [(memory-alloc-string "mem" (get size-mappings "StringName"))]
+                             [(alloc-bytes-line "mem" (get size-mappings "StringName"))]
                              (invoke-pointer-lines "string_name_new_with_utf8_chars" ["mem" "s"])
                              [(format "return new %s(mem);" string-name-java-classname)])}
                     {:return-type "Pointer"
@@ -594,11 +613,11 @@
   (let [modifiers->s (fn [modifiers]
                        (if (set? modifiers)
                          (->> [(modifiers "public")
-                             (modifiers "private")
-                             (modifiers "static")
-                             (modifiers "final")]
-                            (filter (complement nil?))
-                            (str/join " "))
+                               (modifiers "private")
+                               (modifiers "static")
+                               (modifiers "final")]
+                              (filter (complement nil?))
+                              (str/join " "))
                          ""))
         make-args-s (fn [args]
                       (->> args
@@ -645,7 +664,8 @@
                     variant-classmap
                     global-scope-classmap
                     (make-godot-bridge-classmap (map #(get % "name") classes))]
-                   (map normal-class-m->classmap classes))]
+                   (map normal-class-m->classmap classes)
+                   (make-builtin-class-classmaps))]
     (doseq [{:keys [filename lines]} (map classmap->exportmap classmaps)]
       (spit (io/file godot-wrapper-class-output-dir filename)
             (str/join "\n" lines)))))
