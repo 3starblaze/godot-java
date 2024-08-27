@@ -188,25 +188,25 @@
    :modifiers #{"public"}
    :lines lines})
 
+(defn concat-in [m in-xs xs]
+  (update-in m in-xs concat xs))
+
 (defn native-address-hook [hookmap]
-  (update hookmap :classmap
-          (fn [classmap]
-            (-> classmap
-                (update :fields concat
-                        [{:modifiers #{"private"}
-                          :type "Pointer"
-                          :name "nativeAddress"}])
-                (update :constructors concat [(native-address-constructor-with-lines
-                                               ["nativeAddress = p;"])])
-                (update :methods concat [{:return-type "Pointer"
-                                          :modifiers #{"public"}
-                                          :name "getNativeAddress"
-                                          :args []
-                                          :lines ["return nativeAddress;"]}])))))
+  (-> hookmap
+      (concat-in [:classmap :fields] [{:modifiers #{"private"}
+                                       :type "Pointer"
+                                       :name "nativeAddress"}])
+      (concat-in [:classmap :constructors] [(native-address-constructor-with-lines
+                                             ["nativeAddress = p;"])])
+      (concat-in [:classmap :methods] [{:return-type "Pointer"
+                                        :modifiers #{"public"}
+                                        :name "getNativeAddress"
+                                        :args []
+                                        :lines ["return nativeAddress;"]}])))
 
 (defn native-address-child-hook [hookmap]
-  (update-in hookmap [:classmap :constructors] concat [(native-address-constructor-with-lines
-                                                        ["super(p);"])]))
+  (concat-in hookmap [:classmap :constructors]
+             [(native-address-constructor-with-lines ["super(p);"])]))
 
 (defn make-method-bind-cacher-hook [class-m]
   (let [godot-classname (get class-m "name")
@@ -231,35 +231,31 @@
                                                          hash)]}))))]
     (fn [hookmap]
       (-> hookmap
-          (update-in [:classmap :fields] concat
-                     [(merge default-hook-field-map
-                             {:name self-class-string-name-cache-field-name
-                              :type string-name-java-classname})]
-                     (flatten (map :fields method-infos)))
-          (update :hook-lines concat
-                  [(format "%s = bridge.stringNameFromString(\"%s\");"
-                           self-class-string-name-cache-field-name
-                           godot-classname)]
-                  (flatten (map :hook-lines method-infos)))))))
+          (concat-in [:classmap :fields] [(merge default-hook-field-map
+                                                 {:name self-class-string-name-cache-field-name
+                                                  :type string-name-java-classname})
+                                          (flatten (map :fields method-infos))])
+          (concat-in [:hook-lines] [(format "%s = bridge.stringNameFromString(\"%s\");"
+                                            self-class-string-name-cache-field-name
+                                            godot-classname)
+                                    (flatten (map :hook-lines method-infos))])))))
 
 (defn singleton-hook [hookmap]
   (if-let [classname (singleton-set (get-in hookmap [:classmap :classname]))]
     (-> hookmap
-        (update :classmap (fn [classmap]
-                            (-> classmap
-                                (update :fields concat [(merge default-hook-field-map
-                                                               {:type classname
-                                                                :name "singletonInstance"})])
-                                (update :methods concat [{:modifiers #{"public" "static"}
-                                                          :return-type classname
-                                                          :name "getInstance"
-                                                          :lines ["return singletonInstance;"]}]))))
-        (update :hook-lines concat [(format
-                                     "Pointer singletonAddress = bridge.loadSingleton(%s);"
-                                     self-class-string-name-cache-field-name)
-                                    (format
-                                     "singletonInstance = new %s(singletonAddress);"
-                                     classname)]))
+        (concat-in [:classmap :fields] [(merge default-hook-field-map
+                                               {:type classname
+                                                :name "singletonInstance"})])
+        (concat-in [:classmap :methods] [{:modifiers #{"public" "static"}
+                                          :return-type classname
+                                          :name "getInstance"
+                                          :lines ["return singletonInstance;"]}])
+        (concat-in [:hook-lines] [(format
+                                   "Pointer singletonAddress = bridge.loadSingleton(%s);"
+                                   self-class-string-name-cache-field-name)
+                                  (format
+                                   "singletonInstance = new %s(singletonAddress);"
+                                   classname)]))
     hookmap))
 
 (defn apply-hook-on-hookmap [{:keys [classmap hook-lines] :as hookmap} [hook & hooks]]
@@ -483,29 +479,28 @@
                                %)
                              members)]
     (fn [hookmap]
-      (update hookmap :classmap
-              (fn [classmap]
-                (-> classmap
-                    (update :fields concat (map (fn [{:keys [java-type native-var]}]
-                                                  {:modifiers #{"public"}
-                                                   :type java-type
-                                                   :name native-var}) member-var-maps))
-                    (update :constructors concat
-                            [{:modifiers #{"public"}
-                              :args [m-arg offset-arg]
-                              ;; NOTE: Since we need to set an instance field,
-                              ;; get-memory-getter-expression is used instead of
-                              ;; get-memory-getter-line
-                              :lines (map #(format "this.%s = %s;"
-                                                   (:native-var %)
-                                                   (get-memory-getter-expression %))
-                                          member-var-maps)}])
-                    (update :methods concat
-                            [{:return-type "void"
-                              :name "intoMemory"
-                              :modifiers #{"public"}
-                              :args [m-arg offset-arg]
-                              :lines (map get-memory-setter-line member-var-maps)}])))))))
+      (-> hookmap
+          (concat-in [:classmap :fields]
+                     (map (fn [{:keys [java-type native-var]}]
+                            {:modifiers #{"public"}
+                             :type java-type
+                             :name native-var}) member-var-maps))
+          (concat-in [:classmap :constructors]
+                     [{:modifiers #{"public"}
+                       :args [m-arg offset-arg]
+                       ;; NOTE: Since we need to set an instance field,
+                       ;; get-memory-getter-expression is used instead of
+                       ;; get-memory-getter-line
+                       :lines (map #(format "this.%s = %s;"
+                                            (:native-var %)
+                                            (get-memory-getter-expression %))
+                                   member-var-maps)}])
+          (concat-in [:classmap :methods]
+                     [{:return-type "void"
+                       :name "intoMemory"
+                       :modifiers #{"public"}
+                       :args [m-arg offset-arg]
+                       :lines (map get-memory-setter-line member-var-maps)}])))))
 
 (defn make-builtin-class-classmaps []
   (->> (get api "builtin_classes")
