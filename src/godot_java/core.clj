@@ -603,53 +603,52 @@
                                flatten)}
    [native-address-hook]))
 
+(defn modifiers->s [modifiers]
+  (if (set? modifiers)
+    (->> [(modifiers "public")
+          (modifiers "private")
+          (modifiers "static")
+          (modifiers "final")]
+         (filter (complement nil?))
+         (str/join " "))
+    ""))
+
+(defn make-args-s [args]
+  (->> args
+       (map (fn [{:keys [type name]}] (str type " " name)))
+       (str/join ", ")
+       (format "(%s)")))
+
+(defn field-m->line [{:keys [modifiers type name value]}]
+  (str/join " "
+            [(modifiers->s modifiers)
+             type name
+             (if value (format "= %s;" value) ";")]))
+
+(defn constructor-m->lines [classname {:keys [modifiers args lines]}]
+  (block-lines
+   (str (modifiers->s modifiers) " " classname (make-args-s args))
+   lines))
+
+(defn method-m->lines [{:keys [return-type modifiers args name lines]}]
+  (block-lines
+   (str/join " " [(modifiers->s modifiers) return-type (str name (make-args-s args))])
+   lines))
+
 (defn classmap->exportmap
   [{:keys [imports classname parent-classname fields constructors methods class-preamble-lines]}]
-  (let [modifiers->s (fn [modifiers]
-                       (if (set? modifiers)
-                         (->> [(modifiers "public")
-                               (modifiers "private")
-                               (modifiers "static")
-                               (modifiers "final")]
-                              (filter (complement nil?))
-                              (str/join " "))
-                         ""))
-        make-args-s (fn [args]
-                      (->> args
-                           (map (fn [{:keys [type name]}] (str type " " name)))
-                           (str/join ", ")
-                           (format "(%s)")))]
-    {:filename (str classname ".java")
-     :lines (concat
-             [(format "package %s;" godot-wrapper-class-package-name)
-              ""]
-             (map #(format "import %s;" %) imports)
-             preamble-lines
-             (block-lines (format "public class %s extends %s" classname (or parent-classname "Object"))
-                          (concat
-                           class-preamble-lines
-                           (->> fields
-                                (map
-                                 (fn [{:keys [modifiers type name value]}]
-                                   (str/join " "
-                                             [(modifiers->s modifiers)
-                                              type name
-                                              (if value (format "= %s;" value) ";")]))))
-                           (->> constructors
-                                (map (fn [{:keys [modifiers args lines]}]
-                                       (block-lines
-                                        (str (modifiers->s modifiers) " " classname (make-args-s args))
-                                        lines)))
-                                flatten)
-                           (->> methods
-                                (map (fn [{:keys [return-type modifiers args name lines]}]
-                                       (block-lines
-                                        (str/join " "
-                                                  [(modifiers->s modifiers)
-                                                   return-type
-                                                   (str name (make-args-s args))])
-                                        lines)))
-                                flatten))))}))
+  {:filename (str classname ".java")
+   :lines (concat
+           [(format "package %s;" godot-wrapper-class-package-name)
+            ""]
+           (map #(format "import %s;" %) imports)
+           preamble-lines
+           (block-lines (format "public class %s extends %s" classname (or parent-classname "Object"))
+                        (concat
+                         class-preamble-lines
+                         (map field-m->line fields)
+                         (flatten (map #(constructor-m->lines classname %) constructors))
+                         (flatten (map method-m->lines methods)))))})
 
 (defn generate-and-save-java-classes []
   (.mkdirs godot-wrapper-class-output-dir)
