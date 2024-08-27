@@ -450,7 +450,8 @@
                   (block-lines "static"
                                (concat
                                 [(format "%s tmp = new HashMap();" (:type reverse-mapping-field))]
-                                (map #(format "tmp.put(%s, %s);" (get-value-s %) classname) values)
+                                (map #(format "tmp.put(%s, %s);" (get-value-s %) (get % "name"))
+                                     values)
                                 [(str (:name reverse-mapping-field)
                                       " = Collections.unmodifiableMap(tmp);")]))
                   (concat
@@ -463,6 +464,7 @@
                    [""]
                    (method-m->lines
                     {:modifiers #{"public" "static"}
+                     :name "fromValue"
                      :return-type classname
                      :args [value-arg]
                      :lines (flatten
