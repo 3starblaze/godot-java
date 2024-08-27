@@ -402,38 +402,81 @@
              (map get-memory-dealloc-line arg-memory-var-maps)
              (get-return-lines result-memory-var-map))}))
 
-(defn enum-m->lines [m]
+(defn modifiers->s [modifiers]
+  (if (set? modifiers)
+    (->> [(modifiers "public")
+          (modifiers "private")
+          (modifiers "static")
+          (modifiers "final")]
+         (filter (complement nil?))
+         (str/join " "))
+    ""))
+
+(defn make-args-s [args]
+  (->> args
+       (map (fn [{:keys [type name]}] (str type " " name)))
+       (str/join ", ")
+       (format "(%s)")))
+
+(defn field-m->line [{:keys [modifiers type name value]}]
+  (str/join " "
+            [(modifiers->s modifiers)
+             type name
+             (if value (format "= %s;" value) ";")]))
+
+(defn constructor-m->lines [classname {:keys [modifiers args lines]}]
+  (block-lines
+   (str (modifiers->s modifiers) " " classname (make-args-s args))
+   lines))
+
+(defn method-m->lines [{:keys [return-type modifiers args name lines]}]
+  (block-lines
+   (str/join " " [(modifiers->s modifiers) return-type (str name (make-args-s args))])
+   lines))
+
+(defn enum-m->lines [{:strs [values] :as m}]
   ;; TODO Handle bitfields
-  (block-lines (str "public enum " (get m "name"))
-               (concat
-                (let [n (count (get m "values"))]
-                  (->> (get m "values")
-                       ;: Make enum member definition line
-                       (map (fn [{:strs [name value]}] (format "%s(%sL)" name value)))
-                       ;; Add a semicolon for the last line and comma for other lines
-                       (map-indexed (fn [i s] (str s (if (= i (dec n)) ";" ","))))))
-                ;; NOTE: Long with big L because we have to use classes for types
-                [(format "private static Map<Long, %s> reverseMapping;" (get m "name"))]
-                (block-lines "static"
-                             (concat
-                              [(format "Map<Long, %s> tmp = new HashMap();" (get m "name"))]
-                              ;; NOTE: "L" because of Java long
-                              (map #(format "tmp.put(%sL, %s);" (get % "value") (get % "name"))
-                                   (get m "values"))
-                              ["reverseMapping = Collections.unmodifiableMap(tmp);"]))
-                (concat
-                 ["public final long value;"
-                  ""]
-                 (block-lines (format "private %s(long value)" (get m "name"))
-                              ["this.value = value;"])
-                 [""]
-                 (block-lines (format "public static %s fromValue(long v)" (get m "name"))
-                              (concat
-                               [(format "%s res = reverseMapping.get(v);" (get m "name"))]
-                               (block-lines "if (res == null)"
-                                            [(format "throw new IllegalArgumentException(\"%s\");"
-                                                     "Value could not be converted to an enum!")])
-                               ["return res;"]))))))
+  (let [value-arg {:type "long" :name "value"}
+        classname (get m "name")
+        reverse-mapping-field {:modifiers #{"private" "static"}
+                               ;; NOTE: Long with big L because we have to use classes for types
+                               :type (format "Map<Long, %s>" classname)
+                               :name "reverseMapping"}
+        ;; NOTE: "L" because of Java long
+        get-value-s #(str (get % "value") "L")]
+    (block-lines (str "public enum " classname)
+                 (concat
+                  (let [n (count values)]
+                    (->> values
+                         ;: Make enum member definition line
+                         (map #(str (get % "name") "(" (get-value-s %) ")"))
+                         ;; Add a semicolon for the last line and comma for other lines
+                         (map-indexed (fn [i s] (str s (if (= i (dec n)) ";" ","))))))
+                  [(field-m->line reverse-mapping-field)]
+                  (block-lines "static"
+                               (concat
+                                [(format "%s tmp = new HashMap();" (:type reverse-mapping-field))]
+                                (map #(format "tmp.put(%s, %s);" (get-value-s %) classname) values)
+                                [(str (:name reverse-mapping-field)
+                                      " = Collections.unmodifiableMap(tmp);")]))
+                  (concat
+                   [(field-m->line (merge value-arg {:modifiers #{"public" "final"}}))
+                    ""]
+                   (constructor-m->lines (get m "name")
+                                         {:modifiers #{"private"}
+                                          :args [value-arg]
+                                          :lines ["this.value = value;"]})
+                   [""]
+                   (method-m->lines
+                    {:modifiers #{"public" "static"}
+                     :return-type classname
+                     :args [value-arg]
+                     :lines (flatten
+                             [(format "%s res = reverseMapping.get(%s);" classname (:name value-arg))
+                              (block-lines "if (res == null)"
+                                           [(format "throw new IllegalArgumentException(\"%s\");"
+                                                    "Value could not be converted to an enum!")])
+                              ["return res;"]])}))))))
 
 (defn normal-class-m->classmap [m]
   (let [classname (godot-classname->java-classname (get m "name"))
@@ -602,38 +645,6 @@
                                (map enum-m->lines)
                                flatten)}
    [native-address-hook]))
-
-(defn modifiers->s [modifiers]
-  (if (set? modifiers)
-    (->> [(modifiers "public")
-          (modifiers "private")
-          (modifiers "static")
-          (modifiers "final")]
-         (filter (complement nil?))
-         (str/join " "))
-    ""))
-
-(defn make-args-s [args]
-  (->> args
-       (map (fn [{:keys [type name]}] (str type " " name)))
-       (str/join ", ")
-       (format "(%s)")))
-
-(defn field-m->line [{:keys [modifiers type name value]}]
-  (str/join " "
-            [(modifiers->s modifiers)
-             type name
-             (if value (format "= %s;" value) ";")]))
-
-(defn constructor-m->lines [classname {:keys [modifiers args lines]}]
-  (block-lines
-   (str (modifiers->s modifiers) " " classname (make-args-s args))
-   lines))
-
-(defn method-m->lines [{:keys [return-type modifiers args name lines]}]
-  (block-lines
-   (str/join " " [(modifiers->s modifiers) return-type (str name (make-args-s args))])
-   lines))
 
 (defn classmap->exportmap
   [{:keys [imports classname parent-classname fields constructors methods class-preamble-lines]}]
