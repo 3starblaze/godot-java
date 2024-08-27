@@ -223,14 +223,16 @@
                                                          hash)]}))))]
     (fn [hookmap]
       (-> hookmap
-          (concat-in [:classmap :fields] [(merge default-hook-field-map
-                                                 {:name self-class-string-name-cache-field-name
-                                                  :type string-name-java-classname})
-                                          (flatten (map :fields method-infos))])
-          (concat-in [:hook-lines] [(format "%s = bridge.stringNameFromString(\"%s\");"
-                                            self-class-string-name-cache-field-name
-                                            godot-classname)
-                                    (flatten (map :hook-lines method-infos))])))))
+          (concat-in [:classmap :fields]
+                     (flatten [(merge default-hook-field-map
+                                      {:name self-class-string-name-cache-field-name
+                                       :type string-name-java-classname})
+                               (map :fields method-infos)]))
+          (concat-in [:hook-lines]
+                     (flatten [(format "%s = bridge.stringNameFromString(\"%s\");"
+                                       self-class-string-name-cache-field-name
+                                       godot-classname)
+                               (map :hook-lines method-infos)]))))))
 
 (defn singleton-hook [hookmap]
   (if-let [classname (singleton-set (get-in hookmap [:classmap :classname]))]
