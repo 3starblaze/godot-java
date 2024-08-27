@@ -64,13 +64,10 @@
 
 (def dont-use-me-class-name (godot-classname->java-classname "DontUseMe"))
 
-(defn sanitize-method-name [s]
-  (case s
-    ;; NOTE: new is a reserved word
-    "new" "gd_new"
-    ;; NOTE: wait is a final method defined in java.lang.Object
-    "wait" "gd_wait"
-    s))
+(defn sanitize-identifier [s]
+  ;; NOTE: Some parameters have reserved words as names (e.g. interface, char) and thus I decided
+  ;; that it is easier to prefix all parameters to avoid the problem.
+  (str "gd_" s))
 
 (def preamble-lines
   "Lines that should be inserted in the beginning of each file (after package name)."
@@ -159,11 +156,6 @@
           :native-var native-var
           :offset-expression offset-expression}
          (parameter-m->memory-info type-m)))
-
-;; NOTE: Some parameters have reserved words as names (e.g. interface, char) and thus I decided
-;; that it is easier to prefix all parameters to avoid the problem.
-(defn convert-parameter-name [s]
-  (str "gd_" s))
 
 (defn block-lines [header lines]
   (concat [(format "%s {" header)]
@@ -372,7 +364,7 @@
                              (fn [i arg]
                                (get-memory-var-map
                                 (str "argMem" i)
-                                (convert-parameter-name (get arg "name"))
+                                (sanitize-identifier (get arg "name"))
                                 "0"
                                 arg))
                              arguments)
@@ -380,7 +372,7 @@
         args-mem-var "argsMem"
         args-lines (get-args-lines args-mem-var arg-memory-var-maps)
         result-memory-var-map (get-memory-var-map res-mem-var "resValue" "0" return_value)]
-    {:name (sanitize-method-name name)
+    {:name (sanitize-identifier name)
      :return-type (:java-type result-memory-var-map)
      :modifiers #{"public" (when is_static "static") (when-not is_virtual "final")}
      :args (map (fn [{:keys [native-var java-type]}] {:name native-var :type java-type})
