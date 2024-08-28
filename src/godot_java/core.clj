@@ -541,16 +541,26 @@
                        :args [m-arg offset-arg]
                        :lines (map get-memory-setter-line member-var-maps)}])))))
 
+(defn make-builtin-class-constructor [{:strs [index arguments]}]
+  {:modifiers #{"public"}
+   :args (map (fn [arg]
+                {:name (sanitize-identifier (get arg "name"))
+                 :type (:java-type (parameter-m->memory-info arg))})
+              arguments)
+   :lines ["// TODO"]})
+
 (defn make-builtin-class-classmaps []
   (->> (get api "builtin_classes")
        (filter #(not ((set (keys godot-type-overrides)) (get % "name"))))
        (map (fn [m]
               (let [classname (godot-classname->java-classname (get m "name"))]
-                (apply-hooks {:classname classname
-                              :class-preamble-lines (flatten (map enum-m->lines (get m "enums")))}
-                             (if (struct-like-classes-set classname)
-                               [(make-struct-like-class-hook m)]
-                               [native-address-hook])))))))
+                (apply-hooks
+                 {:classname classname
+                  :class-preamble-lines (flatten (map enum-m->lines (get m "enums")))
+                  :constructors (map make-builtin-class-constructor (get m "constructors"))}
+                 (if (struct-like-classes-set classname)
+                   [(make-struct-like-class-hook m)]
+                   [native-address-hook])))))))
 
 (defn make-godot-bridge-classmap [gd-classnames]
   (let [classname "GodotBridge"
