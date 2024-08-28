@@ -560,9 +560,15 @@
                              "classdb_get_method_bind"
                              "string_name_new_with_utf8_chars"
                              "string_new_with_utf8_chars"
+                             "string_to_utf8_chars"
                              "object_method_bind_ptrcall"
                              "classdb_construct_object"
                              "global_get_singleton"]
+        invoke-lines (fn [method return-type args]
+                       (concat
+                        [(str method ".invoke" return-type "(new Object[]{")]
+                        (map indent-line (map #(str % ",") args))
+                        ["});"]))
         invoke-pointer-lines (fn [method args]
                                (concat
                                 [(str method ".invokePointer(new Object[]{")]
@@ -605,6 +611,25 @@
                                [(alloc-bytes-line "mem" (get size-mappings godot-c))]
                                (invoke-pointer-lines "string_new_with_utf8_chars" ["mem" "s"])
                                [(format "return new %s(mem);" java-c)])})
+                    {:return-type "String"
+                     :name "stringFromGodotString"
+                     :args [{:type (godot-classname->java-classname "String")
+                             :name "s"}]
+                     :lines (flatten
+                             [(invoke-lines "long char_count = string_to_utf8_chars"
+                                            "Long"
+                                            ["s.getNativeAddress()" "null" "0"])
+                              ;; NOTE: A utf-8 character max length is 4 bytes and we are accounting
+                              ;; for the worst case scenario where all characters are max width
+                              ;; (because we can only get char count). +1 because of null byte.
+                              "long byte_count = 4 * char_count + 1;"
+                              "Memory mem = new Memory(byte_count);"
+                              "mem.clear();"
+                              (invoke-lines "string_to_utf8_chars" "Void"
+                                            ["s.getNativeAddress()" "mem" "char_count"])
+                              "String res = mem.getString(0, \"utf-8\");"
+                              "mem.close();"
+                              "return res;"])}
                     {:return-type "Pointer"
                      :name "getMethodBind"
                      :args [{:type string-name-java-classname :name "classname"}
