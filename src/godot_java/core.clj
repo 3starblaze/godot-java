@@ -4,7 +4,7 @@
    [clojure.java.io :as io]
    [clojure.string :as str]))
 
-(def api (json/decode-stream (io/reader "godot-headers/extension_api.json")))
+(def api (json/parse-stream (io/reader "godot-headers/extension_api.json")))
 
 ;; NOTE: The are some enums that start with "Variant." and Variant is not an explicitly
 ;; decalred class, so we need to account for that

@@ -5,48 +5,89 @@
   :requires
   [[build.build :as build]
    [build.recurse-keys :as recurse]
-   [babashka.fs :as bfs]]
+   [babashka.fs :as bfs]
+   [godot-java.core :as godot-java]
+   [babashka.nrepl.server :as srv]
+   ]
+
+  :init
+  (do
+    (def opts {:pre-start-fn build/echo})
+    (def vars ;; data allows other tasks to manipulate this map more easily
+      {:JAVA_HOME (build/java-home)
+       :INCLUDES ["-I":JAVA_HOME"/include -I":JAVA_HOME"/include/":OS]
+       :LIBS ["-ljvm -L ":JAVA_HOME"/lib -L ":JAVA_HOME"/lib/server"]
+
+       :compile ["gcc -g -Wall -fPIC ":INCLUDES" -c src/entry.c -o entry.o"]
+       :link ["gcc -g -fPIC ":INCLUDES" ":LIBS" -shared -o entry.so entry.o -rdynamic"]})
+    )
 
   make-macos
   {:doc "Equivalent of make for macos"
+   :task (let [{:keys [compile link]} (-> vars (merge {:OS "darwin"})
+                                          (recurse/recurse-keys)
+                                          #_ (doto clojure.pprint/pprint))]
+           (shell opts compile)
+           (shell opts link)
+           (bfs/delete "entry.o")
+           (bfs/copy "entry.so" "src/dummy_godot_project/" {:replace-existing true})
+           )}
+
+  check-deps
+  {:task 
+   (let [jar-file "target/godot_java-1.0-SNAPSHOT-jar-with-dependencies.jar"
+         ]
+     (cond
+       (-> jar-file bfs/exists? not)
+       (build/exit "godot_java-Y.Y-xxxx.jar has not yet been generated. Run bb mvn")
+       ))}
+
+  generate-and-save-java-classes
+  {:doc "Generate files like godot_java.Godot.GodotBridge"
    :task
-   (let
-       [vars {:JAVA_HOME (build/java-home)
-              :INCLUDES ["-I":JAVA_HOME"/include -I":JAVA_HOME"/include/darwin"]
-              :LIBS ["-ljvm -L ":JAVA_HOME"/lib -L ":JAVA_HOME"/lib/server"]
+   (do
+     (println "Generating java classes.")
+     (godot-java/generate-and-save-java-classes))}
 
-              :compile ["gcc -g -Wall -fPIC ":INCLUDES" -c src/entry.c -o entry.o"]
-              :link ["gcc -g -fPIC ":INCLUDES" ":LIBS" -shared -o entry.so entry.o -rdynamic"]
-              }
-        {:keys [compile link]} (-> vars
-                                   (recurse/recurse-keys)
-                                   #_ (doto clojure.pprint/pprint))
-        opts {:pre-start-fn build/echo}
-        ]
-     (shell opts compile)
-     (shell opts link)
-     (bfs/delete "entry.o")
-     (bfs/copy "entry.so" "src/dummy_godot_project/" {:replace-existing true})
-     
-     ;; TODO For MacOS specifically https://stackoverflow.com/a/14657625/93074
-
-     )}
-
+  mvn
+  {:depends [generate-and-save-java-classes]
+   :task
+   (shell opts "mvn clean assembly:assembly -DdescriptorId=jar-with-dependencies")}
 
   run-godot
   {:doc "just run godot"
-   :task (do
-          (println (str "LD_LIBRARY_PATH " (build/ld-library-path)))
-          (shell {:extra-env
-                  {"LD_LIBRARY_PATH" (build/ld-library-path)}
-                  }
-                 "godot src/dummy_godot_project/project.godot")
-          #_
-          (bb-utils/get-env! "godot-clojure.dev.nrepl" "entry-fn"
-                             ))}
+   :depends [check-deps]
+   :task (let [;; TODO https://github.com/babashka/fs/pull/133
+               jar-path (shell "readlink -f target/godot_java-1.0-SNAPSHOT-jar-with-dependencies.jar)")
+               envs {;; TODO Maybe change build to use rpath instead
+                     "DYLD_LIBRARY_PATH" (build/ld-library-path) ;; macos
+                     "LD_LIBRARY_PATH" (build/ld-library-path)
+                     "CLASSPATH" jar-path
+                     "ENTRY_CLASS" "DefaultInitHandler"
+                     "HELPER_NODE_CLASS" "DefaultNodeOverride"
+
+                     }]
+           (println envs)
+           #_
+           (shell (merge opts
+                         {:extra-env envs})
+                  "godot src/dummy_godot_project/project.godot"))}
 
   ;; If you use HTTPS, see  https://stackoverflow.com/a/62615597/93074
   godot-headers
   {:task (shell "git submodule update --init --recursive")}
+
+  #_#_
+  nrepl
+  {:doc "Nrepl with all dependencies"
+   :task
+   (do
+     (srv/start-server! {:host "localhost"
+                         :port 1449})
+     (spit ".nrepl-port" "1449")
+     (-> (Runtime/getRuntime)
+         (.addShutdownHook
+          (Thread. (fn [] (fs/delete ".nrepl-port")))))
+     (deref (promise)))}
  }
  }

@@ -35,6 +35,11 @@
 
 (defn echo [x] (apply println ">>" (:cmd x)))
 
+(defn exit [x]
+                 (println x)
+                 (System/exit 1)
+                 )
+
 (defn java-home []
   (-> (System/getenv) (get "JAVA_HOME"))
   )
@@ -49,7 +54,7 @@
        (#{:darwin} os) (str ":" (get-project-root!) "/src/dummy_godot_project/")
        ))))
 
-
+;; TODO delete
 (defn get-env! [ns f]
   (let
       [JAVA_HOME (-> (System/getenv) (get "JAVA_HOME"))]
