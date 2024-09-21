@@ -1,5 +1,6 @@
 {
  :paths ["src"]
+ :deps {zprint/zprint  {:mvn/version "1.2.9"}}
  :tasks
  {
   :requires
@@ -13,7 +14,8 @@
   :init
   (do
     (def opts {:pre-start-fn build/echo})
-    (def vars ;; data allows other tasks to manipulate this map more easily
+    (def godot-java-jar "target/godot_java-1.0-SNAPSHOT-jar-with-dependencies.jar")
+    (def vars ;; being data allows other tasks to manipulate this map more easily
       {:JAVA_HOME (build/java-home)
        :INCLUDES ["-I":JAVA_HOME"/include -I":JAVA_HOME"/include/":OS]
        :LIBS ["-ljvm -L ":JAVA_HOME"/lib -L ":JAVA_HOME"/lib/server"]
@@ -25,22 +27,12 @@
   make-macos
   {:doc "Equivalent of make for macos"
    :task (let [{:keys [compile link]} (-> vars (merge {:OS "darwin"})
-                                          (recurse/recurse-keys)
-                                          #_ (doto clojure.pprint/pprint))]
+                                          (recurse/recurse-keys) #_ (doto build/zpprint))]
            (shell opts compile)
            (shell opts link)
            (bfs/delete "entry.o")
            (bfs/copy "entry.so" "src/dummy_godot_project/" {:replace-existing true})
            )}
-
-  check-deps
-  {:task 
-   (let [jar-file "target/godot_java-1.0-SNAPSHOT-jar-with-dependencies.jar"
-         ]
-     (cond
-       (-> jar-file bfs/exists? not)
-       (build/exit "godot_java-Y.Y-xxxx.jar has not yet been generated. Run bb mvn")
-       ))}
 
   generate-and-save-java-classes
   {:doc "Generate files like godot_java.Godot.GodotBridge"
@@ -54,40 +46,37 @@
    :task
    (shell opts "mvn clean assembly:assembly -DdescriptorId=jar-with-dependencies")}
 
+  run-checks
+  {:task
+   (do
+     (cond
+       (-> godot-java-jar bfs/exists? not)
+       (build/exit (str "The jar has not been generated: " godot-java-jar " .\n Run bb mvn"))
+
+       (-> "src/dummy_godot_project/entry.so" bfs/exists? not)
+       (build/exit (str "The file entry.so does not exist .\n Run bb make-macos"))
+       )
+     (println "All checks passed!"))
+   }
+
   run-godot
   {:doc "just run godot"
-   :depends [check-deps]
+   :depends [run-checks]
    :task (let [;; TODO https://github.com/babashka/fs/pull/133
-               jar-path (shell "readlink -f target/godot_java-1.0-SNAPSHOT-jar-with-dependencies.jar)")
                envs {;; TODO Maybe change build to use rpath instead
                      "DYLD_LIBRARY_PATH" (build/ld-library-path) ;; macos
                      "LD_LIBRARY_PATH" (build/ld-library-path)
-                     "CLASSPATH" jar-path
-                     "ENTRY_CLASS" "DefaultInitHandler"
+                     "CLASSPATH" (-> godot-java-jar (bfs/file) (bfs/absolutize) str)
+                     "ENTRY_CLASS"  "godot_java/DefaultInitHandler"
                      "HELPER_NODE_CLASS" "DefaultNodeOverride"
-
                      }]
-           (println envs)
-           #_
-           (shell (merge opts
-                         {:extra-env envs})
+           (build/zpprint envs)
+           (shell (merge opts {:extra-env envs})
                   "godot src/dummy_godot_project/project.godot"))}
 
   ;; If you use HTTPS, see  https://stackoverflow.com/a/62615597/93074
   godot-headers
   {:task (shell "git submodule update --init --recursive")}
 
-  #_#_
-  nrepl
-  {:doc "Nrepl with all dependencies"
-   :task
-   (do
-     (srv/start-server! {:host "localhost"
-                         :port 1449})
-     (spit ".nrepl-port" "1449")
-     (-> (Runtime/getRuntime)
-         (.addShutdownHook
-          (Thread. (fn [] (fs/delete ".nrepl-port")))))
-     (deref (promise)))}
  }
- }
+}
