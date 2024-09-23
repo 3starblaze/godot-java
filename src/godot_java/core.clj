@@ -4,6 +4,90 @@
    [clojure.java.io :as io]
    [clojure.string :as str]))
 
+(def identifier-schema
+  :string)
+
+(def type-schema
+  :string)
+
+(def modifiers-schema
+  [:set [:or :nil [:enum "public" "private" "static" "final"]]])
+
+(def arg-map-schema
+  [:map
+   [:name identifier-schema]
+   [:type type-schema]])
+
+(def memory-map-schema
+  "Schema for value that encodes memory information."
+  [:map
+   [:typeclass [:enum
+                :void ; NOTE: Void
+                :primitive ; NOTE: basic numeric type
+                :opaque ; NOTE: an object instance (void pointer)
+                :enum ; NOTE: Java class, Godot int64
+                :struct-like]] ; NOTE: Java class, Godot struct
+   [:java-type :string]
+   [:n-bytes [:int {:min 0}]]])
+
+(def api-method-schema
+  [:map
+   ["name" :string]
+   ["arguments"
+    {:optional true}
+    [:map
+     ["name" :string]
+     ["type" :string]]]
+   ["is_static" :boolean]
+   ["is_virtual" :boolean]
+   ["return_value" [:map
+                    ["type" :string]]]])
+
+(def field-map-schema
+  [:map
+   [:modifiers modifiers-schema]
+   [:type type-schema]
+   [:name identifier-schema]
+   ;; NOTE: Only applicable when modifier is static
+   [:value :string]])
+
+(def constructor-map-schema
+  [:map
+   [:args [:sequential arg-map-schema]]
+   [:modifiers modifiers-schema]
+   [:lines [:sequential :string]]])
+
+(def method-map-schema
+  [:map
+   [:name identifier-schema]
+   [:return-type type-schema]
+   [:args [:sequential arg-map-schema]]
+   [:lines [:sequential :string]]
+   [:modifiers modifiers-schema]])
+
+(def classmap-schema
+  [:map
+   [:imports
+    {:optional true}
+    [:sequential :string]]
+   [:classname
+    [:string]]
+   [:parent-classname
+    {:optional true}
+    [:string]]
+   [:fields
+    {:optional true}
+    [:sequential field-map-schema]]
+   [:constructors
+    {:optional true}
+    [:sequential constructor-map-schema]]
+   [:methods
+    {:optional true}
+    [:sequential method-map-schema]]
+   [:class-preamble-lines
+    {:optional true}
+    [:sequential :string]]])
+
 (def api (json/decode-stream (io/reader "godot-headers/extension_api.json")))
 
 ;; NOTE: The are some enums that start with "Variant." and Variant is not an explicitly
@@ -110,14 +194,11 @@
    "float" "double"})
 
 (defn parameter-m->memory-info
-  "Return a map of {:keys [typeclass java-type n-bytes]} for given parameter map.
-
-  typeclass is either:
-  - :void -- void
-  - :primitive -- basic numeric type
-  - :opaque -- an object instance (void pointer)
-  - :enum -- Java class, Godot int64
-  - :struct-like -- Java class, Godot struct"
+  {:malli/schema [:->
+                  [:maybe [:map
+                           ["type" {:optional true} type-schema]
+                           ["meta" {:optional true} :string]]]
+                  memory-map-schema]}
   [{:strs [meta type] :as m}]
   (let [overriden-type (get godot-type-overrides type)
         fetched-size (get size-mappings type)
@@ -360,78 +441,6 @@
                        arg-var-maps))
    :deinit (when-not (empty? arg-var-maps) [(str memory-var ".close();")])})
 
-
-(def identifier-schema
-  :string)
-
-(def type-schema
-  :string)
-
-(def modifiers-schema
-  [:set [:or :nil [:enum "public" "private" "static" "final"]]])
-
-(def arg-map
-  [:map
-   [:name identifier-schema]
-   [:type type-schema]])
-
-(def api-method-schema
-  [:map
-   ["name" :string]
-   ["arguments"
-    {:optional true}
-    [:map
-     ["name" :string]
-     ["type" :string]]]
-   ["is_static" :boolean]
-   ["is_virtual" :boolean]
-   ["return_value" [:map
-                    ["type" :string]]]])
-
-(def field-map-schema
-  [:map
-   [:modifiers modifiers-schema]
-   [:type type-schema]
-   [:name identifier-schema]
-   ;; NOTE: Only applicable when modifier is static
-   [:value :string]])
-
-(def constructor-map-schema
-  [:map
-   [:args [:sequential arg-map]]
-   [:modifiers modifiers-schema]
-   [:lines [:sequential :string]]])
-
-(def method-map-schema
-  [:map
-   [:name identifier-schema]
-   [:return-type type-schema]
-   [:args [:sequential arg-map]]
-   [:lines [:sequential :string]]
-   [:modifiers modifiers-schema]])
-
-(def classmap-schema
-  [:map
-   [:imports
-    {:optional true}
-    [:sequential :string]]
-   [:classname
-    [:string]]
-   [:parent-classname
-    {:optional true}
-    [:string]]
-   [:fields
-    {:optional true}
-    [:sequential field-map-schema]]
-   [:constructors
-    {:optional true}
-    [:sequential constructor-map-schema]]
-   [:methods
-    {:optional true}
-    [:sequential method-map-schema]]
-   [:class-preamble-lines
-    {:optional true}
-    [:sequential :string]]])
 
 (defn method-m->classmap-method
   {:malli/schema [:-> api-method-schema method-map-schema]}
