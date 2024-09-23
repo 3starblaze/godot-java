@@ -40,6 +40,9 @@
 
 ;; Example usage:
 (comment
-  (def example-map {:a "hello" :b ["world" :a] :c [:a :b] :d ["foo" "bar"]})
-  (println (recurse-keys example-map))
-)
+  (recurse-keys
+   {:a "hello" :b ["world" :a] :c [:a :b] :d ["foo" "bar"]})
+  ;; =>
+  {:a "hello", :b "worldhello", :c "helloworldhello", :d "foobar"}
+  ;;
+  )
