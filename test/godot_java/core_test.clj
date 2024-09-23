@@ -1,8 +1,11 @@
 (ns godot-java.core-test
   (:require
-   [clojure.test :refer [deftest is]]
+   [clojure.test :refer [deftest is use-fixtures]]
    [clojure.string :as str]
-   [godot-java.core :as gdj]))
+   [godot-java.core :as gdj]
+   [godot-java.test-util :as test-util]))
+
+(use-fixtures :once test-util/malli-instrumentation-fixture)
 
 (deftest parameter-m->memory-info-test
   (let [f gdj/parameter-m->memory-info
