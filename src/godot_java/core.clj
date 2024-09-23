@@ -4,6 +4,100 @@
    [clojure.java.io :as io]
    [clojure.string :as str]))
 
+(def identifier-schema
+  :string)
+
+(def type-schema
+  :string)
+
+(def modifiers-schema
+  [:set [:or :nil [:enum "public" "private" "static" "final"]]])
+
+(def arg-map-schema
+  [:map
+   [:name identifier-schema]
+   [:type type-schema]])
+
+(def memory-map-schema
+  "Schema for value that encodes memory information."
+  [:map
+   [:typeclass [:enum
+                :void ; NOTE: Void
+                :primitive ; NOTE: basic numeric type
+                :opaque ; NOTE: an object instance (void pointer)
+                :enum ; NOTE: Java class, Godot int64
+                :struct-like]] ; NOTE: Java class, Godot struct
+   [:java-type :string]
+   [:n-bytes [:int {:min 0}]]])
+
+(def api-method-schema
+  [:map
+   ["name" :string]
+   ["arguments"
+    {:optional true}
+    [:map
+     ["name" :string]
+     ["type" :string]]]
+   ["is_static" :boolean]
+   ["is_virtual" :boolean]
+   ["return_value" [:map
+                    ["type" :string]]]])
+
+(def field-map-schema
+  [:map
+   [:modifiers modifiers-schema]
+   [:type type-schema]
+   [:name identifier-schema]
+   ;; NOTE: Only applicable when modifier is static
+   [:value :string]])
+
+(def constructor-map-schema
+  [:map
+   [:args [:sequential arg-map-schema]]
+   [:modifiers modifiers-schema]
+   [:lines [:sequential :string]]])
+
+(def method-map-schema
+  [:map
+   [:name identifier-schema]
+   [:return-type type-schema]
+   [:args [:sequential arg-map-schema]]
+   [:lines [:sequential :string]]
+   [:modifiers modifiers-schema]])
+
+(def classmap-schema
+  [:map
+   [:imports
+    {:optional true}
+    [:sequential :string]]
+   [:classname
+    [:string]]
+   [:parent-classname
+    {:optional true}
+    [:string]]
+   [:fields
+    {:optional true}
+    [:sequential field-map-schema]]
+   [:constructors
+    {:optional true}
+    [:sequential constructor-map-schema]]
+   [:methods
+    {:optional true}
+    [:sequential method-map-schema]]
+   [:class-preamble-lines
+    {:optional true}
+    [:sequential :string]]])
+
+(def exportmap-schema
+  [:map
+   [:filename :string]
+   [:lines [:sequential :string]]])
+
+(def hookmap-schema
+  [:map
+   [:classmap classmap-schema]
+   [:hook-lines [:sequential :string]]])
+
 (def api (json/parse-stream (io/reader "godot-headers/extension_api.json")))
 
 ;; NOTE: The are some enums that start with "Variant." and Variant is not an explicitly
@@ -110,14 +204,11 @@
    "float" "double"})
 
 (defn parameter-m->memory-info
-  "Return a map of {:keys [typeclass java-type n-bytes]} for given parameter map.
-
-  typeclass is either:
-  - :void -- void
-  - :primitive -- basic numeric type
-  - :opaque -- an object instance (void pointer)
-  - :enum -- Java class, Godot int64
-  - :struct-like -- Java class, Godot struct"
+  {:malli/schema [:->
+                  [:maybe [:map
+                           ["type" {:optional true} type-schema]
+                           ["meta" {:optional true} :string]]]
+                  memory-map-schema]}
   [{:strs [meta type] :as m}]
   (let [overriden-type (get godot-type-overrides type)
         fetched-size (get size-mappings type)
@@ -252,7 +343,9 @@
                                    classname)]))
     hookmap))
 
-(defn apply-hook-on-hookmap [{:keys [classmap hook-lines] :as hookmap} [hook & hooks]]
+(defn apply-hook-on-hookmap
+  {:malli/schema [:-> hookmap-schema [:sequential fn?] classmap-schema]}
+  [{:keys [classmap hook-lines] :as hookmap} [hook & hooks]]
   (if (nil? hook)
     (let [bridge-arg {:type "GodotBridge" :name "bridge"}]
       (-> classmap
@@ -270,6 +363,7 @@
     (apply-hook-on-hookmap (hook hookmap) hooks)))
 
 (defn apply-hooks [classmap hooks]
+  {:malli/schema [:-> classmap-schema [:sequential fn?] classmap-schema]}
   (apply-hook-on-hookmap {:classmap classmap} hooks))
 
 (defn alloc-bytes-line [memory-var n-bytes]
@@ -360,7 +454,9 @@
                        arg-var-maps))
    :deinit (when-not (empty? arg-var-maps) [(str memory-var ".close();")])})
 
+
 (defn method-m->classmap-method
+  {:malli/schema [:-> api-method-schema method-map-schema]}
   [{:strs [name arguments is_static is_virtual return_value]}]
   (let [arg-memory-var-maps (map-indexed
                              (fn [i arg]
@@ -541,16 +637,26 @@
                        :args [m-arg offset-arg]
                        :lines (map get-memory-setter-line member-var-maps)}])))))
 
+(defn make-builtin-class-constructor [{:strs [index arguments]}]
+  {:modifiers #{"public"}
+   :args (map (fn [arg]
+                {:name (sanitize-identifier (get arg "name"))
+                 :type (:java-type (parameter-m->memory-info arg))})
+              arguments)
+   :lines ["// TODO"]})
+
 (defn make-builtin-class-classmaps []
   (->> (get api "builtin_classes")
        (filter #(not ((set (keys godot-type-overrides)) (get % "name"))))
        (map (fn [m]
               (let [classname (godot-classname->java-classname (get m "name"))]
-                (apply-hooks {:classname classname
-                              :class-preamble-lines (flatten (map enum-m->lines (get m "enums")))}
-                             (if (struct-like-classes-set classname)
-                               [(make-struct-like-class-hook m)]
-                               [native-address-hook])))))))
+                (apply-hooks
+                 {:classname classname
+                  :class-preamble-lines (flatten (map enum-m->lines (get m "enums")))
+                  :constructors (map make-builtin-class-constructor (get m "constructors"))}
+                 (if (struct-like-classes-set classname)
+                   [(make-struct-like-class-hook m)]
+                   [native-address-hook])))))))
 
 (defn make-godot-bridge-classmap [gd-classnames]
   (let [classname "GodotBridge"
@@ -560,9 +666,15 @@
                              "classdb_get_method_bind"
                              "string_name_new_with_utf8_chars"
                              "string_new_with_utf8_chars"
+                             "string_to_utf8_chars"
                              "object_method_bind_ptrcall"
                              "classdb_construct_object"
                              "global_get_singleton"]
+        invoke-lines (fn [method return-type args]
+                       (concat
+                        [(str method ".invoke" return-type "(new Object[]{")]
+                        (map indent-line (map #(str % ",") args))
+                        ["});"]))
         invoke-pointer-lines (fn [method args]
                                (concat
                                 [(str method ".invokePointer(new Object[]{")]
@@ -605,6 +717,25 @@
                                [(alloc-bytes-line "mem" (get size-mappings godot-c))]
                                (invoke-pointer-lines "string_new_with_utf8_chars" ["mem" "s"])
                                [(format "return new %s(mem);" java-c)])})
+                    {:return-type "String"
+                     :name "stringFromGodotString"
+                     :args [{:type (godot-classname->java-classname "String")
+                             :name "s"}]
+                     :lines (flatten
+                             [(invoke-lines "long char_count = string_to_utf8_chars"
+                                            "Long"
+                                            ["s.getNativeAddress()" "null" "0"])
+                              ;; NOTE: A utf-8 character max length is 4 bytes and we are accounting
+                              ;; for the worst case scenario where all characters are max width
+                              ;; (because we can only get char count). +1 because of null byte.
+                              "long byte_count = 4 * char_count + 1;"
+                              "Memory mem = new Memory(byte_count);"
+                              "mem.clear();"
+                              (invoke-lines "string_to_utf8_chars" "Void"
+                                            ["s.getNativeAddress()" "mem" "char_count"])
+                              "String res = mem.getString(0, \"utf-8\");"
+                              "mem.close();"
+                              "return res;"])}
                     {:return-type "Pointer"
                      :name "getMethodBind"
                      :args [{:type string-name-java-classname :name "classname"}
@@ -654,6 +785,7 @@
    [native-address-hook]))
 
 (defn classmap->exportmap
+  {:malli/schema [:-> classmap-schema exportmap-schema]}
   [{:keys [imports classname parent-classname fields constructors methods class-preamble-lines]}]
   {:filename (str classname ".java")
    :lines (concat
