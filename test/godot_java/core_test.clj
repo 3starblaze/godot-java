@@ -85,3 +85,12 @@
         "There should be a line that initializes resulting memory")
     (is (any-line-matches? #(str/includes? % "resMem.close()"))
         "There should be a line that frees the resulting memory")))
+
+(deftest classmap->exportmap []
+  (let [sample-classmap {:classname "Foo"}
+        {:keys [filename lines]} (gdj/classmap->exportmap sample-classmap)
+        exists-line-with-str? (fn [s] (not (empty? (->> lines (filter #(str/includes? % s))))))]
+    (is (= filename "Foo.java"))
+    (is (exists-line-with-str? "class"))
+    (is (exists-line-with-str? "Foo"))
+    (is (exists-line-with-str? "package"))))

@@ -88,6 +88,11 @@
     {:optional true}
     [:sequential :string]]])
 
+(def exportmap-schema
+  [:map
+   [:filename :string]
+   [:lines [:sequential :string]]])
+
 (def api (json/decode-stream (io/reader "godot-headers/extension_api.json")))
 
 ;; NOTE: The are some enums that start with "Variant." and Variant is not an explicitly
@@ -772,6 +777,7 @@
    [native-address-hook]))
 
 (defn classmap->exportmap
+  {:malli/schema [:-> classmap-schema exportmap-schema]}
   [{:keys [imports classname parent-classname fields constructors methods class-preamble-lines]}]
   {:filename (str classname ".java")
    :lines (concat
