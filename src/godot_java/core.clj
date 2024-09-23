@@ -93,6 +93,11 @@
    [:filename :string]
    [:lines [:sequential :string]]])
 
+(def hookmap-schema
+  [:map
+   [:classmap classmap-schema]
+   [:hook-lines [:sequential :string]]])
+
 (def api (json/decode-stream (io/reader "godot-headers/extension_api.json")))
 
 ;; NOTE: The are some enums that start with "Variant." and Variant is not an explicitly
@@ -338,7 +343,9 @@
                                    classname)]))
     hookmap))
 
-(defn apply-hook-on-hookmap [{:keys [classmap hook-lines] :as hookmap} [hook & hooks]]
+(defn apply-hook-on-hookmap
+  {:malli/schema [:-> hookmap-schema [:sequential fn?] classmap-schema]}
+  [{:keys [classmap hook-lines] :as hookmap} [hook & hooks]]
   (if (nil? hook)
     (let [bridge-arg {:type "GodotBridge" :name "bridge"}]
       (-> classmap
@@ -356,6 +363,7 @@
     (apply-hook-on-hookmap (hook hookmap) hooks)))
 
 (defn apply-hooks [classmap hooks]
+  {:malli/schema [:-> classmap-schema [:sequential fn?] classmap-schema]}
   (apply-hook-on-hookmap {:classmap classmap} hooks))
 
 (defn alloc-bytes-line [memory-var n-bytes]

@@ -94,3 +94,9 @@
     (is (exists-line-with-str? "class"))
     (is (exists-line-with-str? "Foo"))
     (is (exists-line-with-str? "package"))))
+
+(deftest apply-hooks-test []
+  (let [sample-classmap {:classname "Foo"}
+        new-classmap (gdj/apply-hooks sample-classmap [])]
+    (is (= (:classname new-classmap) "Foo")
+        "The classname should not have changed")))
