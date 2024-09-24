@@ -1,0 +1,29 @@
+#+title: Dev
+
+* What is this?
+Development information with good-to-have knowledge about this project.
+* Todos
+** TODO [#B] Respect default arguments
+- Java doesn't have that functionality, use method overloading.
+- ptrcall doesn't support default values, you need to provide them explicitly
+  - You need to convert string (type provided) into appropriate instance
+** TODO [#C] Handle enum bitfields
+** TODO [#C] Handle typed arrays
+** TODO [#B] Handle varargs
+** TODO [#B] Make operator calls
+- Probably the same vibe as method overloading + you need to mangle name.
+- =(str "OP_" mangled-name)=
+- copy clojure mangling rules for consistency
+** TODO [#C] Handle signals
+Need to figure out how those will be implemented. In C# there are delegates which AFAIK are like callbacks.
+** TODO [#B] Add built-in constructors
+Notes:
+- constructors have indices (instead of hashes)
+- variant_get_ptr_constructor(type, idx) -> GDExtensionPtrConstructor
+- =typedef void (*GDExtensionPtrConstructor)(GDExtensionUninitializedTypePtr p_base, const GDExtensionConstTypePtr *p_args);=
+** TODO [#C] Add Builtin class constants
+Those can be intrs and they can also be struct-likes (e.g. =Vector3(1, 0, 0)=). You need to make a "parser" which takes string + type and returns the corresponding value.
+** TODO [#B] Start testing generated Java classes
+These tests should not be done with Clojure. Java uses JUnit and there is a predetermined folder to put those test files (it's hard to change those folders in maven, it's not worth the effort).
+
+As of now [2024-09-24], the main thing to test are godot method calls. The easiest way to do this is to fetch a Singleton like =Engine= or =Input= and call a method there.
