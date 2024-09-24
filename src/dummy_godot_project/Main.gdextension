@@ -6,3 +6,6 @@ reloadable = true
 [libraries]
 linux.x86_64       = "res://entry.so"
 linux.debug.x86_64 = "res://entry.so"
+macos.arm64        = "res://entry.so"
+macos.debug.arm64  = "res://entry.so"
+

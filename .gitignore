@@ -12,3 +12,7 @@ src/main/java/godot_java/Godot/
 
 # Other Clojure stuff
 .clj-kondo
+.lsp/.cache/
+
+# Other
+ignore/
